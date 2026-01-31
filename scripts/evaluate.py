@@ -552,6 +552,109 @@ def evaluate_ensemble(
     }
 
 
+def evaluate_ensemble_kfold(
+    model_names: List[str],
+    data_path: Path,
+    circuits_dir: Path,
+    input_dim: int,
+    n_folds: int = 5,
+    n_runs_per_fold: int = 5,
+    base_seed: int = 42,
+    batch_size: int = 32,
+    ensemble_strategy: str = "average",
+    **model_kwargs,
+) -> Dict[str, Any]:
+    """Evaluate an ensemble using k-fold cross-validation.
+
+    Args:
+        model_names: List of model names to ensemble
+        data_path: Path to data JSON
+        circuits_dir: Path to circuits directory
+        input_dim: Feature dimension
+        n_folds: Number of cross-validation folds
+        n_runs_per_fold: Number of ensemble runs per fold
+        base_seed: Base random seed
+        batch_size: Batch size
+        ensemble_strategy: "average", "weighted_average", or "vote"
+        **model_kwargs: Additional model parameters
+
+    Returns:
+        Dictionary with evaluation results
+    """
+    ensemble_name = f"Ensemble({'+'.join(model_names)})"
+
+    print("\n" + "="*60)
+    print(f"{ensemble_name.upper()} EVALUATION ({n_folds}-FOLD CV)")
+    print("="*60)
+    print(f"Strategy: {ensemble_strategy}")
+    print(f"\n{n_folds} folds × {n_runs_per_fold} runs = {n_folds * n_runs_per_fold} total evaluations")
+
+    all_results = []
+    fold_results = []
+
+    # Create all fold loaders once
+    set_all_seeds(base_seed)
+    fold_loaders = create_kfold_data_loaders(
+        data_path=data_path,
+        circuits_dir=circuits_dir,
+        n_folds=n_folds,
+        batch_size=batch_size,
+        seed=base_seed,
+    )
+
+    for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders):
+        fold_run_results = []
+
+        desc = f"Fold {fold_idx+1}/{n_folds}"
+        for run_idx in tqdm(range(n_runs_per_fold), desc=desc):
+            seed = base_seed + fold_idx * 1000 + run_idx
+            set_all_seeds(seed)
+
+            # Train all base models for this ensemble
+            base_models = []
+            for model_idx, model_name in enumerate(model_names):
+                model_class = AVAILABLE_MODELS[model_name]
+                model_seed = seed + model_idx * 10000
+                model = create_model(model_class, input_dim, model_seed, **model_kwargs)
+                model.fit(train_loader, val_loader, verbose=False)
+                base_models.append(model)
+
+            # Create ensemble
+            ensemble = EnsembleModel(
+                models=base_models,
+                strategy=ensemble_strategy,
+            )
+
+            # Evaluate
+            result = run_single_evaluation(ensemble, train_loader, val_loader)
+            result["fold"] = fold_idx
+            result["run"] = run_idx
+
+            fold_run_results.append(result)
+            all_results.append(result)
+
+        fold_aggregated = aggregate_metrics(fold_run_results)
+        fold_results.append({
+            "fold": fold_idx,
+            "n_train": len(train_loader.dataset),
+            "n_val": len(val_loader.dataset),
+            "metrics": fold_aggregated,
+        })
+
+    # Aggregate across all folds and runs
+    aggregated = aggregate_metrics(all_results)
+
+    return {
+        "model": ensemble_name,
+        "n_folds": n_folds,
+        "n_runs_per_fold": n_runs_per_fold,
+        "n_runs": n_folds * n_runs_per_fold,
+        "aggregated_metrics": aggregated,
+        "fold_results": fold_results,
+        "all_results": all_results,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate models with multiple random initializations and optional k-fold CV"
@@ -644,33 +747,45 @@ def main():
                 sys.exit(1)
 
         if use_kfold:
-            print("Error: k-fold CV not supported for ensemble mode yet")
-            sys.exit(1)
+            n_runs_per_fold = min(args.n_runs, 5) if args.n_runs == 100 else min(args.n_runs, 10)
+            results = evaluate_ensemble_kfold(
+                model_names=model_names,
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                input_dim=input_dim,
+                n_folds=args.kfold,
+                n_runs_per_fold=n_runs_per_fold,
+                base_seed=args.seed,
+                batch_size=args.batch_size,
+                ensemble_strategy=args.ensemble_strategy,
+                device=args.device,
+                epochs=args.epochs,
+            )
+        else:
+            # Show dataset split info
+            train_loader, val_loader = create_data_loaders(
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                batch_size=args.batch_size,
+                val_fraction=args.val_fraction,
+                seed=args.seed,
+            )
+            print(f"  Train samples: {len(train_loader.dataset)}")
+            print(f"  Val samples: {len(val_loader.dataset)}")
 
-        # Show dataset split info
-        train_loader, val_loader = create_data_loaders(
-            data_path=data_path,
-            circuits_dir=circuits_dir,
-            batch_size=args.batch_size,
-            val_fraction=args.val_fraction,
-            seed=args.seed,
-        )
-        print(f"  Train samples: {len(train_loader.dataset)}")
-        print(f"  Val samples: {len(val_loader.dataset)}")
-
-        results = evaluate_ensemble(
-            model_names=model_names,
-            data_path=data_path,
-            circuits_dir=circuits_dir,
-            input_dim=input_dim,
-            n_runs=min(args.n_runs, 10),  # Cap at 10 for ensembles (slower)
-            base_seed=args.seed,
-            batch_size=args.batch_size,
-            val_fraction=args.val_fraction,
-            ensemble_strategy=args.ensemble_strategy,
-            device=args.device,
-            epochs=args.epochs,
-        )
+            results = evaluate_ensemble(
+                model_names=model_names,
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                input_dim=input_dim,
+                n_runs=min(args.n_runs, 10),  # Cap at 10 for ensembles (slower)
+                base_seed=args.seed,
+                batch_size=args.batch_size,
+                val_fraction=args.val_fraction,
+                ensemble_strategy=args.ensemble_strategy,
+                device=args.device,
+                epochs=args.epochs,
+            )
 
         print_model_report(results)
 
