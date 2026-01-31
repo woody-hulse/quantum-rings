@@ -1,11 +1,13 @@
 """
 Model implementations for quantum circuit threshold and runtime prediction.
 
-Provides XGBoost and MLP models for:
-- Threshold classification (9 classes: 1, 2, 4, 8, 16, 32, 64, 128, 256)
-- Runtime regression (log-space)
+DEPRECATED: This module is kept for backward compatibility.
+Use the new modular structure instead:
+    - from models import MLPModel, XGBoostModel, BaseModel
+    - from scoring import compute_challenge_score
 """
 
+import warnings
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,6 +31,8 @@ from data_loader import (
     create_data_loaders,
     get_feature_statistics,
 )
+
+from scoring import compute_challenge_score
 
 
 class MLPModel(nn.Module):
@@ -396,45 +400,3 @@ class XGBoostModel:
         
         self.scaler.mean_ = np.load(path / "scaler_mean.npy")
         self.scaler.scale_ = np.load(path / "scaler_scale.npy")
-
-
-def compute_challenge_score(
-    pred_threshold: np.ndarray,
-    true_threshold: np.ndarray,
-    pred_runtime: np.ndarray,
-    true_runtime: np.ndarray,
-) -> Dict[str, float]:
-    """
-    Compute scoring metrics similar to the challenge.
-    
-    - Threshold: penalize underprediction (score 0), overprediction by rung distance
-    - Runtime: symmetric error in log-space
-    """
-    n = len(pred_threshold)
-    
-    threshold_scores = []
-    for pred, true in zip(pred_threshold, true_threshold):
-        pred_idx = THRESHOLD_LADDER.index(pred) if pred in THRESHOLD_LADDER else -1
-        true_idx = THRESHOLD_LADDER.index(true) if true in THRESHOLD_LADDER else -1
-        
-        if pred_idx < true_idx:
-            threshold_scores.append(0.0)
-        else:
-            distance = pred_idx - true_idx
-            score = 1.0 / (1.0 + distance)
-            threshold_scores.append(score)
-    
-    threshold_score = np.mean(threshold_scores)
-    
-    log_pred = np.log1p(np.maximum(pred_runtime, 0))
-    log_true = np.log1p(np.maximum(true_runtime, 0))
-    runtime_errors = np.abs(log_pred - log_true)
-    runtime_score = np.exp(-np.mean(runtime_errors))
-    
-    combined_score = 0.6 * threshold_score + 0.4 * runtime_score
-    
-    return {
-        "threshold_score": threshold_score,
-        "runtime_score": runtime_score,
-        "combined_score": combined_score,
-    }
