@@ -38,7 +38,7 @@ def main():
     
     evaluate_script = Path(__file__).parent / "evaluate.py"
     
-    models = ["mlp", "xgboost"]
+    models = ["catboost", "mlp", "xgboost"]
     
     print("="*60)
     print("MODEL COMPARISON")
