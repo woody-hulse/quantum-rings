@@ -14,7 +14,6 @@ from typing import Dict, List, Any, Type, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -41,13 +40,13 @@ def extract_labels(loader) -> tuple:
     """Extract ground truth labels from a data loader."""
     all_thresh = []
     all_runtime = []
-    
+
     for batch in loader:
         thresh_classes = batch["threshold_class"].tolist()
         thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
         all_thresh.extend(thresh_values)
         all_runtime.extend(np.expm1(batch["log_runtime"].numpy()).tolist())
-    
+
     return np.array(all_thresh), np.array(all_runtime)
 
 
@@ -63,9 +62,9 @@ def aggregate_metrics(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
     """Aggregate metrics across multiple runs, computing mean and std."""
     if not all_results:
         return {}
-    
+
     aggregated = {}
-    
+
     metric_keys = [
         ("train_time", None),
         # Training metrics (for overfitting detection)
@@ -81,7 +80,7 @@ def aggregate_metrics(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
         ("runtime_score", "challenge_scores"),
         ("combined_score", "challenge_scores"),
     ]
-    
+
     for key, parent in metric_keys:
         values = []
         for result in all_results:
@@ -91,7 +90,7 @@ def aggregate_metrics(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
                 val = result.get(key)
             if val is not None:
                 values.append(val)
-        
+
         if values:
             aggregated[key] = {
                 "mean": float(np.mean(values)),
@@ -99,7 +98,7 @@ def aggregate_metrics(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
                 "min": float(np.min(values)),
                 "max": float(np.max(values)),
             }
-    
+
     return aggregated
 
 
@@ -122,7 +121,7 @@ def create_model(
 ) -> BaseModel:
     """Factory function to create a model with the given seed."""
     set_all_seeds(seed)
-    
+
     if model_class == MLPModel:
         return MLPModel(
             input_dim=input_dim,
@@ -133,6 +132,7 @@ def create_model(
             device=kwargs.get("device", "cpu"),
             epochs=kwargs.get("epochs", 100),
             early_stopping_patience=kwargs.get("early_stopping_patience", 20),
+            use_scoring_loss=kwargs.get("use_scoring_loss", False),
         )
     elif model_class == XGBoostModel:
         return XGBoostModel(
@@ -174,11 +174,11 @@ def run_single_evaluation(
 ) -> Dict[str, Any]:
     """Train and evaluate a single model instance."""
     import time
-    
+
     start_time = time.time()
     model.fit(train_loader, val_loader, verbose=False)
     train_time = time.time() - start_time
-    
+
     # Evaluate on training set (for overfitting detection)
     train_eval = model.evaluate(train_loader)
     train_metrics = {
@@ -186,30 +186,30 @@ def run_single_evaluation(
         "train_runtime_mse": train_eval["runtime_mse"],
         "train_runtime_mae": train_eval["runtime_mae"],
     }
-    
+
     # Evaluate on validation set
     val_metrics = model.evaluate(val_loader)
-    
+
     # Compute challenge scores on validation set only
     features = extract_features(val_loader)
     pred_thresh, pred_runtime = model.predict(features)
     true_thresh, true_runtime = extract_labels(val_loader)
-    
+
     challenge_scores = compute_challenge_score(
         pred_thresh, true_thresh, pred_runtime, true_runtime
     )
-    
+
     result = {
         "train_time": train_time,
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
         "challenge_scores": challenge_scores,
     }
-    
+
     importance = model.get_feature_importance()
     if importance is not None:
         result["feature_importance"] = importance
-    
+
     return result
 
 
@@ -220,50 +220,49 @@ def evaluate_model(
     input_dim: int,
     n_runs: int = 100,
     base_seed: int = 42,
-    batch_size: int = 32,
+    batch_size: int = 8,
     val_fraction: float = 0.2,
     **model_kwargs,
 ) -> Dict[str, Any]:
     """Evaluate a model class with multiple random initializations.
-    
+
     Creates fresh data loaders for each run to ensure full reproducibility.
     """
     model_name = model_class.__name__.replace("Model", "").upper()
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print(f"{model_name} MODEL EVALUATION")
-    print("="*60)
+    print("=" * 60)
     print(f"\nTraining {n_runs} models with different initializations...")
-    
+
     all_results = []
-    
-    for i in tqdm(range(n_runs), desc=f"Training {model_name} models"):
+
+    for i in range(n_runs):
+        print(f"\nRun {i + 1}/{n_runs}")
         seed = base_seed + i
-        
-        # Create fresh loaders for each run to ensure reproducibility
-        # Each run uses a different seed for model init, but same seed for data split
+
         set_all_seeds(seed)
         train_loader, val_loader = create_data_loaders(
             data_path=data_path,
             circuits_dir=circuits_dir,
             batch_size=batch_size,
             val_fraction=val_fraction,
-            seed=base_seed,  # Keep data split consistent across runs
+            seed=base_seed,
         )
-        
+
         model = create_model(model_class, input_dim, seed, **model_kwargs)
         result = run_single_evaluation(model, train_loader, val_loader)
         all_results.append(result)
-    
+
     aggregated = aggregate_metrics(all_results)
-    
+
     output = {
         "model": model_name,
         "n_runs": n_runs,
         "aggregated_metrics": aggregated,
         "all_results": all_results,
     }
-    
+
     if all_results and "feature_importance" in all_results[0]:
         output["avg_feature_importance"] = {
             "threshold": np.mean(
@@ -273,7 +272,7 @@ def evaluate_model(
                 [r["feature_importance"]["runtime"] for r in all_results], axis=0
             ),
         }
-    
+
     return output
 
 
@@ -289,10 +288,10 @@ def evaluate_model_kfold(
     **model_kwargs,
 ) -> Dict[str, Any]:
     """Evaluate a model using k-fold cross-validation.
-    
+
     For each fold, trains n_runs_per_fold models with different initializations.
     Reports metrics aggregated across all folds and runs.
-    
+
     Args:
         model_class: Model class to evaluate
         data_path: Path to data JSON
@@ -305,15 +304,17 @@ def evaluate_model_kfold(
         **model_kwargs: Additional model arguments
     """
     model_name = model_class.__name__.replace("Model", "").upper()
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print(f"{model_name} MODEL EVALUATION ({n_folds}-FOLD CV)")
-    print("="*60)
-    print(f"\n{n_folds} folds × {n_runs_per_fold} runs = {n_folds * n_runs_per_fold} total evaluations")
-    
+    print("=" * 60)
+    print(
+        f"\n{n_folds} folds × {n_runs_per_fold} runs = {n_folds * n_runs_per_fold} total evaluations"
+    )
+
     all_results = []
     fold_results = []
-    
+
     # Create all fold loaders once
     set_all_seeds(base_seed)
     fold_loaders = create_kfold_data_loaders(
@@ -323,34 +324,37 @@ def evaluate_model_kfold(
         batch_size=batch_size,
         seed=base_seed,
     )
-    
+
     for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders):
         fold_run_results = []
-        
-        desc = f"Fold {fold_idx+1}/{n_folds}"
-        for run_idx in tqdm(range(n_runs_per_fold), desc=desc):
+
+        print(f"\nFold {fold_idx + 1}/{n_folds}")
+        for run_idx in range(n_runs_per_fold):
+            print(f"  Run {run_idx + 1}/{n_runs_per_fold}")
             seed = base_seed + fold_idx * 1000 + run_idx
             set_all_seeds(seed)
-            
+
             model = create_model(model_class, input_dim, seed, **model_kwargs)
             result = run_single_evaluation(model, train_loader, val_loader)
             result["fold"] = fold_idx
             result["run"] = run_idx
-            
+
             fold_run_results.append(result)
             all_results.append(result)
-        
+
         fold_aggregated = aggregate_metrics(fold_run_results)
-        fold_results.append({
-            "fold": fold_idx,
-            "n_train": len(train_loader.dataset),
-            "n_val": len(val_loader.dataset),
-            "metrics": fold_aggregated,
-        })
-    
+        fold_results.append(
+            {
+                "fold": fold_idx,
+                "n_train": len(train_loader.dataset),
+                "n_val": len(val_loader.dataset),
+                "metrics": fold_aggregated,
+            }
+        )
+
     # Aggregate across all folds and runs
     aggregated = aggregate_metrics(all_results)
-    
+
     output = {
         "model": model_name,
         "n_folds": n_folds,
@@ -360,7 +364,7 @@ def evaluate_model_kfold(
         "fold_results": fold_results,
         "all_results": all_results,
     }
-    
+
     if all_results and "feature_importance" in all_results[0]:
         output["avg_feature_importance"] = {
             "threshold": np.mean(
@@ -370,7 +374,7 @@ def evaluate_model_kfold(
                 [r["feature_importance"]["runtime"] for r in all_results], axis=0
             ),
         }
-    
+
     return output
 
 
@@ -379,11 +383,11 @@ def print_model_report(results: Dict[str, Any]) -> None:
     model_name = results["model"]
     n_runs = results["n_runs"]
     metrics = results["aggregated_metrics"]
-    
+
     # Check if this is a k-fold CV result
     is_kfold = "n_folds" in results
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print(f"{model_name} MODEL REPORT")
     if is_kfold:
         n_folds = results["n_folds"]
@@ -392,12 +396,14 @@ def print_model_report(results: Dict[str, Any]) -> None:
         print(f"Total evaluations: {n_runs}")
     else:
         print(f"Based on {n_runs} runs with different initializations")
-    print("="*60)
-    
+    print("=" * 60)
+
     # Per-fold summary for k-fold CV
     if is_kfold and "fold_results" in results:
         print("\n--- Per-Fold Results ---")
-        print(f"{'Fold':<6} {'Train':>8} {'Val':>6} {'Thresh Acc':>12} {'Combined':>12}")
+        print(
+            f"{'Fold':<6} {'Train':>8} {'Val':>6} {'Thresh Acc':>12} {'Combined':>12}"
+        )
         print("-" * 50)
         for fold_info in results["fold_results"]:
             fold_idx = fold_info["fold"]
@@ -406,20 +412,22 @@ def print_model_report(results: Dict[str, Any]) -> None:
             fold_metrics = fold_info["metrics"]
             thresh_acc = fold_metrics.get("threshold_accuracy", {}).get("mean", 0)
             combined = fold_metrics.get("combined_score", {}).get("mean", 0)
-            print(f"{fold_idx+1:<6} {n_train:>8} {n_val:>6} {thresh_acc:>12.4f} {combined:>12.4f}")
+            print(
+                f"{fold_idx+1:<6} {n_train:>8} {n_val:>6} {thresh_acc:>12.4f} {combined:>12.4f}"
+            )
         print()
-    
+
     # Training vs Validation comparison (for overfitting detection)
     print("--- Overfitting Check (Train vs Val) ---")
     print(f"{'Metric':<25} {'Train Mean':>12} {'Val Mean':>12} {'Gap':>12}")
     print("-" * 61)
-    
+
     overfit_metrics = [
         ("Threshold Accuracy", "train_threshold_accuracy", "threshold_accuracy", True),
         ("Runtime MSE", "train_runtime_mse", "runtime_mse", False),
         ("Runtime MAE", "train_runtime_mae", "runtime_mae", False),
     ]
-    
+
     for display_name, train_key, val_key, higher_is_better in overfit_metrics:
         if train_key in metrics and val_key in metrics:
             train_val = metrics[train_key]["mean"]
@@ -429,13 +437,15 @@ def print_model_report(results: Dict[str, Any]) -> None:
             else:
                 gap = val_val - train_val
             gap_str = f"{gap:+.4f}"
-            print(f"{display_name:<25} {train_val:>12.4f} {val_val:>12.4f} {gap_str:>12}")
-    
+            print(
+                f"{display_name:<25} {train_val:>12.4f} {val_val:>12.4f} {gap_str:>12}"
+            )
+
     # Full metrics table
     print(f"\n--- Validation Metrics (Aggregated) ---")
     print(f"{'Metric':<30} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12}")
     print("-" * 78)
-    
+
     metric_display = [
         ("Training Time (s)", "train_time"),
         ("Val Threshold Accuracy", "threshold_accuracy"),
@@ -445,26 +455,28 @@ def print_model_report(results: Dict[str, Any]) -> None:
         ("Challenge Runtime Score", "runtime_score"),
         ("Challenge Combined Score", "combined_score"),
     ]
-    
+
     for display_name, key in metric_display:
         if key in metrics:
             m = metrics[key]
-            print(f"{display_name:<30} {m['mean']:>12.4f} {m['std']:>12.4f} "
-                  f"{m['min']:>12.4f} {m['max']:>12.4f}")
-    
-    print("\n" + "-"*60)
+            print(
+                f"{display_name:<30} {m['mean']:>12.4f} {m['std']:>12.4f} "
+                f"{m['min']:>12.4f} {m['max']:>12.4f}"
+            )
+
+    print("\n" + "-" * 60)
     if "combined_score" in metrics:
         m = metrics["combined_score"]
         print(f"Final Score: {m['mean']:.4f} ± {m['std']:.4f}")
-    print("="*60)
-    
+    print("=" * 60)
+
     if "avg_feature_importance" in results:
         importance = results["avg_feature_importance"]
         print(f"\nTop 10 features (threshold model, averaged across runs):")
         top_idx = np.argsort(importance["threshold"])[::-1][:10]
         for i, idx in enumerate(top_idx):
             print(f"  {i+1:2d}. Feature {idx:3d}: {importance['threshold'][idx]:.4f}")
-        
+
         print(f"\nTop 10 features (runtime model, averaged across runs):")
         top_idx = np.argsort(importance["runtime"])[::-1][:10]
         for i, idx in enumerate(top_idx):
@@ -500,9 +512,9 @@ def evaluate_ensemble(
     Returns:
         Dictionary with evaluation results
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"ENSEMBLE MODEL EVALUATION")
-    print("="*60)
+    print("=" * 60)
     print(f"Base models: {', '.join(model_names)}")
     print(f"Strategy: {ensemble_strategy}")
     print(f"\nTraining {n_runs} ensembles...")
@@ -583,11 +595,13 @@ def evaluate_ensemble_kfold(
     """
     ensemble_name = f"Ensemble({'+'.join(model_names)})"
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"{ensemble_name.upper()} EVALUATION ({n_folds}-FOLD CV)")
-    print("="*60)
+    print("=" * 60)
     print(f"Strategy: {ensemble_strategy}")
-    print(f"\n{n_folds} folds × {n_runs_per_fold} runs = {n_folds * n_runs_per_fold} total evaluations")
+    print(
+        f"\n{n_folds} folds × {n_runs_per_fold} runs = {n_folds * n_runs_per_fold} total evaluations"
+    )
 
     all_results = []
     fold_results = []
@@ -634,12 +648,14 @@ def evaluate_ensemble_kfold(
             all_results.append(result)
 
         fold_aggregated = aggregate_metrics(fold_run_results)
-        fold_results.append({
-            "fold": fold_idx,
-            "n_train": len(train_loader.dataset),
-            "n_val": len(val_loader.dataset),
-            "metrics": fold_aggregated,
-        })
+        fold_results.append(
+            {
+                "fold": fold_idx,
+                "n_train": len(train_loader.dataset),
+                "n_val": len(val_loader.dataset),
+                "metrics": fold_aggregated,
+            }
+        )
 
     # Aggregate across all folds and runs
     aggregated = aggregate_metrics(all_results)
@@ -660,44 +676,75 @@ def main():
         description="Evaluate models with multiple random initializations and optional k-fold CV"
     )
     parser.add_argument(
-        "--model", type=str, required=True,
+        "--model",
+        type=str,
+        required=True,
         choices=list(AVAILABLE_MODELS.keys()),
-        help="Which model to evaluate"
+        help="Which model to evaluate",
     )
-    parser.add_argument("--n-runs", type=int, default=100,
-                        help="Number of models to train per fold (default: 100, or 20 if using k-fold)")
-    parser.add_argument("--epochs", type=int, default=100,
-                        help="MLP training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=32,
-                        help="Batch size (default: 32)")
-    parser.add_argument("--val-fraction", type=float, default=0.2,
-                        help="Validation fraction for single split (default: 0.2)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Base random seed (default: 42)")
-    parser.add_argument("--device", type=str, default="cpu",
-                        help="Device for MLP (cpu/cuda/mps)")
-    parser.add_argument("--kfold", type=int, default=0,
-                        help="Number of folds for cross-validation (0=disabled, default: 0)")
-    parser.add_argument("--ensemble-models", type=str, default=None,
-                        help="Comma-separated list of models to ensemble (e.g., 'mlp,catboost')")
-    parser.add_argument("--ensemble-strategy", type=str, default="average",
-                        choices=["average", "weighted_average", "vote"],
-                        help="Ensemble strategy (default: average)")
+    parser.add_argument(
+        "--n-runs",
+        type=int,
+        default=100,
+        help="Number of models to train per fold (default: 100, or 20 if using k-fold)",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=100, help="MLP training epochs (default: 100)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=32, help="Batch size (default: 32)"
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.2,
+        help="Validation fraction for single split (default: 0.2)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Base random seed (default: 42)"
+    )
+    parser.add_argument(
+        "--device", type=str, default="cpu", help="Device for MLP (cpu/cuda/mps)"
+    )
+    parser.add_argument(
+        "--kfold",
+        type=int,
+        default=0,
+        help="Number of folds for cross-validation (0=disabled, default: 0)",
+    )
+    parser.add_argument(
+        "--scoring-loss",
+        action="store_true",
+        help="Use challenge-aligned scoring loss (multiplicative) instead of standard losses",
+    )  # bad
+    parser.add_argument(
+        "--ensemble-models",
+        type=str,
+        default=None,
+        help="Comma-separated list of models to ensemble (e.g., 'mlp,catboost')",
+    )
+    parser.add_argument(
+        "--ensemble-strategy",
+        type=str,
+        default="average",
+        choices=["average", "weighted_average", "vote"],
+        help="Ensemble strategy (default: average)",
+    )
     args = parser.parse_args()
-    
+
     project_root = Path(__file__).parent.parent
     data_path = project_root / "data" / "hackathon_public.json"
     circuits_dir = project_root / "circuits"
-    
+
     if not data_path.exists():
         print(f"Error: Data file not found at {data_path}")
         sys.exit(1)
-    
+
     use_kfold = args.kfold > 1
-    
-    print("="*60)
+
+    print("=" * 60)
     print("QUANTUM CIRCUIT MODEL EVALUATION")
-    print("="*60)
+    print("=" * 60)
     print(f"\nConfiguration:")
     print(f"  Model: {args.model}")
     if use_kfold:
@@ -712,12 +759,16 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Base seed: {args.seed}")
     print(f"  Device: {args.device}")
-    
+    if args.scoring_loss:
+        print(f"  Loss: Challenge-aligned scoring loss (multiplicative)")
+    else:
+        print(f"  Loss: Standard (CrossEntropy + MSE)")
+
     # Set global seeds for reproducibility
     set_all_seeds(args.seed)
-    
+
     print("\nLoading data...")
-    
+
     # Get input dimension from a sample loader
     sample_loader, _ = create_data_loaders(
         data_path=data_path,
@@ -728,7 +779,7 @@ def main():
     )
     sample_batch = next(iter(sample_loader))
     input_dim = sample_batch["features"].shape[1]
-    
+
     print(f"\nDataset info:")
     print(f"  Feature dimension: {input_dim}")
 
@@ -743,11 +794,15 @@ def main():
         for model_name in model_names:
             if model_name not in AVAILABLE_MODELS or model_name == "ensemble":
                 print(f"Error: Invalid model name '{model_name}' in ensemble")
-                print(f"Available models: {[k for k in AVAILABLE_MODELS.keys() if k != 'ensemble']}")
+                print(
+                    f"Available models: {[k for k in AVAILABLE_MODELS.keys() if k != 'ensemble']}"
+                )
                 sys.exit(1)
 
         if use_kfold:
-            n_runs_per_fold = min(args.n_runs, 5) if args.n_runs == 100 else min(args.n_runs, 10)
+            n_runs_per_fold = (
+                min(args.n_runs, 5) if args.n_runs == 100 else min(args.n_runs, 10)
+            )
             results = evaluate_ensemble_kfold(
                 model_names=model_names,
                 data_path=data_path,
@@ -789,9 +844,9 @@ def main():
 
         print_model_report(results)
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("EVALUATION COMPLETE")
-        print("="*60)
+        print("=" * 60)
         return
 
     model_class = AVAILABLE_MODELS[args.model]
@@ -799,6 +854,7 @@ def main():
     model_kwargs = {
         "device": args.device,
         "epochs": args.epochs,
+        "use_scoring_loss": args.scoring_loss,
     }
 
     if use_kfold:
@@ -825,11 +881,13 @@ def main():
         )
         print(f"  Train samples: {len(train_loader.dataset)}")
         print(f"  Val samples: {len(val_loader.dataset)}")
-        
+
         if len(val_loader.dataset) < 50:
-            print(f"\n  WARNING: Small validation set ({len(val_loader.dataset)} samples).")
+            print(
+                f"\n  WARNING: Small validation set ({len(val_loader.dataset)} samples)."
+            )
             print(f"           Consider using --kfold 5 for more robust evaluation.")
-        
+
         results = evaluate_model(
             model_class=model_class,
             data_path=data_path,
@@ -841,12 +899,12 @@ def main():
             val_fraction=args.val_fraction,
             **model_kwargs,
         )
-    
+
     print_model_report(results)
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print("EVALUATION COMPLETE")
-    print("="*60)
+    print("=" * 60)
 
 
 if __name__ == "__main__":

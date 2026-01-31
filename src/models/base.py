@@ -25,6 +25,7 @@ class BaseModel(ABC):
         train_loader: DataLoader,
         val_loader: DataLoader,
         verbose: bool = False,
+        show_progress: bool = True,
     ) -> Dict[str, Any]:
         """
         Train the model.
@@ -33,6 +34,7 @@ class BaseModel(ABC):
             train_loader: Training data loader
             val_loader: Validation data loader
             verbose: Whether to print training progress
+            show_progress: Whether to show epoch-level progress bar
             
         Returns:
             Dictionary containing training metrics/history

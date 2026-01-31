@@ -9,4 +9,11 @@ from models.catboost_model import CatBoostModel
 from models.lightgbm_model import LightGBMModel
 from models.ensemble_model import EnsembleModel
 
-__all__ = ["BaseModel", "MLPModel", "XGBoostModel", "CatBoostModel", "LightGBMModel", "EnsembleModel"]
+__all__ = [
+    "BaseModel",
+    "MLPModel",
+    "XGBoostModel",
+    "CatBoostModel",
+    "LightGBMModel",
+    "EnsembleModel",
+]

@@ -12,16 +12,18 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Suppress sklearn feature name warnings
-warnings.filterwarnings('ignore', message='X does not have valid feature names')
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 from data_loader import THRESHOLD_LADDER
 from models.base import BaseModel
 
 try:
     import lightgbm as lgb
+
     HAS_LIGHTGBM = True
 except ImportError:
     HAS_LIGHTGBM = False
@@ -42,7 +44,9 @@ class LightGBMModel(BaseModel):
         verbose: int = -1,
     ):
         if not HAS_LIGHTGBM:
-            raise ImportError("lightgbm is required. Install with: pip install lightgbm")
+            raise ImportError(
+                "lightgbm is required. Install with: pip install lightgbm"
+            )
 
         self.max_depth = max_depth
         self.learning_rate = learning_rate
@@ -61,7 +65,9 @@ class LightGBMModel(BaseModel):
     def name(self) -> str:
         return "LightGBM"
 
-    def _extract_data(self, loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _extract_data(
+        self, loader: DataLoader
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         all_features = []
         all_thresh = []
         all_runtime = []
@@ -110,7 +116,8 @@ class LightGBMModel(BaseModel):
             print("Training threshold regressor...")
         self.threshold_model = lgb.LGBMRegressor(**thresh_params)
         self.threshold_model.fit(
-            X_train_scaled, y_thresh_train,
+            X_train_scaled,
+            y_thresh_train,
             eval_set=[(X_val_scaled, y_thresh_val)],
         )
 
@@ -131,18 +138,25 @@ class LightGBMModel(BaseModel):
             print("Training runtime regressor...")
         self.runtime_model = lgb.LGBMRegressor(**runtime_params)
         self.runtime_model.fit(
-            X_train_scaled, y_runtime_train,
+            X_train_scaled,
+            y_runtime_train,
             eval_set=[(X_val_scaled, y_runtime_val)],
         )
 
-        train_metrics = self._evaluate_internal(X_train_scaled, y_thresh_train, y_runtime_train)
+        train_metrics = self._evaluate_internal(
+            X_train_scaled, y_thresh_train, y_runtime_train
+        )
         val_metrics = self._evaluate_internal(X_val_scaled, y_thresh_val, y_runtime_val)
 
         if verbose:
-            print(f"Train Threshold Acc: {train_metrics['threshold_accuracy']:.4f} | "
-                  f"Train Runtime MSE: {train_metrics['runtime_mse']:.4f}")
-            print(f"Val Threshold Acc: {val_metrics['threshold_accuracy']:.4f} | "
-                  f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}")
+            print(
+                f"Train Threshold Acc: {train_metrics['threshold_accuracy']:.4f} | "
+                f"Train Runtime MSE: {train_metrics['runtime_mse']:.4f}"
+            )
+            print(
+                f"Val Threshold Acc: {val_metrics['threshold_accuracy']:.4f} | "
+                f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}"
+            )
 
         return {"train": train_metrics, "val": val_metrics}
 

@@ -11,6 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loader import THRESHOLD_LADDER
@@ -18,6 +19,7 @@ from models.base import BaseModel
 
 try:
     from catboost import CatBoostRegressor
+
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
@@ -36,7 +38,9 @@ class CatBoostModel(BaseModel):
         verbose: bool = False,
     ):
         if not HAS_CATBOOST:
-            raise ImportError("catboost is required. Install with: pip install catboost")
+            raise ImportError(
+                "catboost is required. Install with: pip install catboost"
+            )
 
         self.depth = depth
         self.learning_rate = learning_rate
@@ -53,7 +57,9 @@ class CatBoostModel(BaseModel):
     def name(self) -> str:
         return "CatBoost"
 
-    def _extract_data(self, loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _extract_data(
+        self, loader: DataLoader
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         all_features = []
         all_thresh = []
         all_runtime = []
@@ -100,7 +106,8 @@ class CatBoostModel(BaseModel):
             print("Training threshold regressor...")
         self.threshold_model = CatBoostRegressor(**thresh_params)
         self.threshold_model.fit(
-            X_train_scaled, y_thresh_train,
+            X_train_scaled,
+            y_thresh_train,
             eval_set=(X_val_scaled, y_thresh_val),
             verbose=False,
         )
@@ -120,19 +127,26 @@ class CatBoostModel(BaseModel):
             print("Training runtime regressor...")
         self.runtime_model = CatBoostRegressor(**runtime_params)
         self.runtime_model.fit(
-            X_train_scaled, y_runtime_train,
+            X_train_scaled,
+            y_runtime_train,
             eval_set=(X_val_scaled, y_runtime_val),
             verbose=False,
         )
 
-        train_metrics = self._evaluate_internal(X_train_scaled, y_thresh_train, y_runtime_train)
+        train_metrics = self._evaluate_internal(
+            X_train_scaled, y_thresh_train, y_runtime_train
+        )
         val_metrics = self._evaluate_internal(X_val_scaled, y_thresh_val, y_runtime_val)
 
         if verbose:
-            print(f"Train Threshold Acc: {train_metrics['threshold_accuracy']:.4f} | "
-                  f"Train Runtime MSE: {train_metrics['runtime_mse']:.4f}")
-            print(f"Val Threshold Acc: {val_metrics['threshold_accuracy']:.4f} | "
-                  f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}")
+            print(
+                f"Train Threshold Acc: {train_metrics['threshold_accuracy']:.4f} | "
+                f"Train Runtime MSE: {train_metrics['runtime_mse']:.4f}"
+            )
+            print(
+                f"Val Threshold Acc: {val_metrics['threshold_accuracy']:.4f} | "
+                f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}"
+            )
 
         return {"train": train_metrics, "val": val_metrics}
 
