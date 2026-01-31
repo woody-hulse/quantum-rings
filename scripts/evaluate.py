@@ -14,7 +14,6 @@ from typing import Dict, List, Any, Type, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -236,18 +235,17 @@ def evaluate_model(
     
     all_results = []
     
-    for i in tqdm(range(n_runs), desc=f"Training {model_name} models"):
+    for i in range(n_runs):
+        print(f"\nRun {i + 1}/{n_runs}")
         seed = base_seed + i
         
-        # Create fresh loaders for each run to ensure reproducibility
-        # Each run uses a different seed for model init, but same seed for data split
         set_all_seeds(seed)
         train_loader, val_loader = create_data_loaders(
             data_path=data_path,
             circuits_dir=circuits_dir,
             batch_size=batch_size,
             val_fraction=val_fraction,
-            seed=base_seed,  # Keep data split consistent across runs
+            seed=base_seed,
         )
         
         model = create_model(model_class, input_dim, seed, **model_kwargs)
@@ -326,8 +324,9 @@ def evaluate_model_kfold(
     for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders):
         fold_run_results = []
         
-        desc = f"Fold {fold_idx+1}/{n_folds}"
-        for run_idx in tqdm(range(n_runs_per_fold), desc=desc):
+        print(f"\nFold {fold_idx + 1}/{n_folds}")
+        for run_idx in range(n_runs_per_fold):
+            print(f"  Run {run_idx + 1}/{n_runs_per_fold}")
             seed = base_seed + fold_idx * 1000 + run_idx
             set_all_seeds(seed)
             

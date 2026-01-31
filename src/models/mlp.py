@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
+from tqdm import tqdm
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -188,6 +189,7 @@ class MLPModel(BaseModel):
         train_loader: DataLoader,
         val_loader: DataLoader,
         verbose: bool = False,
+        show_progress: bool = True,
     ) -> Dict[str, Any]:
         mean, std = get_feature_statistics(train_loader)
         self._set_normalization(mean, std)
@@ -197,7 +199,11 @@ class MLPModel(BaseModel):
         patience_counter = 0
         best_state = None
         
-        for epoch in range(self.epochs):
+        epoch_iter = range(self.epochs)
+        if show_progress:
+            epoch_iter = tqdm(epoch_iter, desc="Training", leave=False)
+        
+        for epoch in epoch_iter:
             train_metrics = self._train_epoch(train_loader)
             val_metrics = self.evaluate(val_loader)
             
@@ -215,14 +221,22 @@ class MLPModel(BaseModel):
             else:
                 patience_counter += 1
             
-            if verbose and (epoch + 1) % 10 == 0:
+            if show_progress:
+                epoch_iter.set_postfix({
+                    "loss": f"{train_metrics['loss']:.3f}",
+                    "val_acc": f"{val_metrics['threshold_accuracy']:.3f}",
+                    "val_mse": f"{val_metrics['runtime_mse']:.3f}",
+                })
+            elif verbose and (epoch + 1) % 10 == 0:
                 print(f"Epoch {epoch+1}/{self.epochs} | "
                       f"Train Loss: {train_metrics['loss']:.4f} | "
                       f"Val Thresh Acc: {val_metrics['threshold_accuracy']:.4f} | "
                       f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}")
             
             if patience_counter >= self.early_stopping_patience:
-                if verbose:
+                if show_progress:
+                    epoch_iter.close()
+                elif verbose:
                     print(f"Early stopping at epoch {epoch+1}")
                 break
         

@@ -19,7 +19,9 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from .graph_builder import (
     build_graph_from_file,
     NODE_FEAT_DIM,
+    NODE_FEAT_DIM_BASIC,
     EDGE_FEAT_DIM,
+    EDGE_FEAT_DIM_BASIC,
     GLOBAL_FEAT_DIM_BASE,
 )
 

@@ -30,25 +30,26 @@ from gnn.graph_builder import (
     GATE_1Q, GATE_2Q, GATE_3Q, GATE_TO_IDX
 )
 from gnn.model import create_gnn_model
-from gnn.dataset import GLOBAL_FEAT_DIM
+from gnn.dataset import GLOBAL_FEAT_DIM, create_graph_data_loaders
+from gnn.train import GNNTrainer
 
 
 GATE_COLORS = {
-    'h': '#FF6B6B',      # Red - Hadamard
-    'x': '#4ECDC4',      # Teal - Pauli X
-    'y': '#45B7D1',      # Blue - Pauli Y
-    'z': '#96CEB4',      # Green - Pauli Z
-    'cx': '#DDA0DD',     # Plum - CNOT
-    'cz': '#98D8C8',     # Mint - CZ
-    'swap': '#F7DC6F',   # Yellow - SWAP
-    'rz': '#BB8FCE',     # Purple - RZ
-    'rx': '#F1948A',     # Light red - RX
-    'ry': '#85C1E9',     # Light blue - RY
-    't': '#FAD7A0',      # Peach - T gate
-    's': '#A9DFBF',      # Light green - S gate
-    'cp': '#D7BDE2',     # Lavender - Controlled phase
-    'ccx': '#E59866',    # Orange - Toffoli
-    'default': '#AEB6BF' # Gray - default
+    'h': '#E63946',      # Red - Hadamard
+    'x': '#2A9D8F',      # Teal - Pauli X
+    'y': '#457B9D',      # Steel blue - Pauli Y
+    'z': '#1D3557',      # Dark blue - Pauli Z
+    'cx': '#9B2335',     # Burgundy - CNOT
+    'cz': '#264653',     # Dark teal - CZ
+    'swap': '#E9C46A',   # Gold - SWAP
+    'rz': '#7209B7',     # Purple - RZ
+    'rx': '#F4A261',     # Orange - RX
+    'ry': '#2196F3',     # Blue - RY
+    't': '#F77F00',      # Bright orange - T gate
+    's': '#06D6A0',      # Mint - S gate
+    'cp': '#9C6644',     # Brown - Controlled phase
+    'ccx': '#D62828',    # Crimson - Toffoli
+    'default': '#6C757D' # Gray - default
 }
 
 
@@ -136,7 +137,7 @@ class GNNVisualizer:
         self,
         qasm_text: str,
         model: torch.nn.Module,
-        figsize: Tuple[int, int] = (14, 10),
+        figsize: Tuple[int, int] = (10, 10),
         layout: str = 'circular',
         fps: int = 10,
         dpi: int = 100,
@@ -161,9 +162,14 @@ class GNNVisualizer:
         # Run forward pass and capture intermediate states
         self.node_states = self._capture_forward_pass()
         
-        # Setup figure
-        self.fig, self.axes = plt.subplots(1, 2, figsize=figsize)
-        self.fig.patch.set_facecolor('#1a1a2e')
+        # Setup figure with single axes (square aspect)
+        self.fig, self.ax = plt.subplots(1, 1, figsize=figsize)
+        self.fig.patch.set_facecolor('white')
+        
+        # Create colormap for activations
+        self.cmap = LinearSegmentedColormap.from_list(
+            'activation', ['#3B82F6', '#8B5CF6', '#EC4899']
+        )
         
     def _capture_forward_pass(self) -> List[np.ndarray]:
         """Run forward pass and capture node states at each layer."""
@@ -198,9 +204,9 @@ class GNNVisualizer:
     
     def _draw_static_elements(self, ax):
         """Draw static circuit elements (nodes, edges, labels)."""
-        ax.set_facecolor('#16213e')
-        ax.set_xlim(-1.8, 1.8)
-        ax.set_ylim(-1.8, 1.8)
+        ax.set_facecolor('white')
+        ax.set_xlim(-1.6, 1.6)
+        ax.set_ylim(-1.6, 1.6)
         ax.set_aspect('equal')
         ax.axis('off')
         
@@ -216,29 +222,15 @@ class GNNVisualizer:
             
             color = get_gate_color(edge['gate_type'])
             
-            # Draw curved edge
-            mid_x = (x1 + x2) / 2
-            mid_y = (y1 + y2) / 2
-            
-            # Offset midpoint perpendicular to the line
-            dx = x2 - x1
-            dy = y2 - y1
-            length = np.sqrt(dx*dx + dy*dy)
-            if length > 0:
-                perp_x = -dy / length * 0.15
-                perp_y = dx / length * 0.15
-                mid_x += perp_x
-                mid_y += perp_y
-            
             # Draw with arrow
             arrow = mpatches.FancyArrowPatch(
                 (x1, y1), (x2, y2),
-                connectionstyle=f"arc3,rad=0.2",
+                connectionstyle="arc3,rad=0.15",
                 arrowstyle='-|>',
-                mutation_scale=15,
+                mutation_scale=12,
                 color=color,
-                alpha=0.6,
-                linewidth=2,
+                alpha=0.7,
+                linewidth=1.5,
             )
             ax.add_patch(arrow)
             edge_artists.append(arrow)
@@ -246,129 +238,106 @@ class GNNVisualizer:
         return edge_artists
     
     def _create_legend(self, ax):
-        """Create a legend for gate types."""
-        ax.set_facecolor('#16213e')
-        ax.axis('off')
-        
-        # Find unique gate types in the circuit
+        """Create a unified legend for gate types."""
         gate_types = set(e['gate_type'] for e in self.edges)
         
-        # Create legend patches
         patches = []
         for gate_type in sorted(gate_types):
             color = get_gate_color(gate_type)
-            patch = mpatches.Patch(color=color, label=gate_type.upper())
+            patch = mpatches.Patch(color=color, label=gate_type.upper(), alpha=0.7)
             patches.append(patch)
         
-        ax.legend(
+        legend = ax.legend(
             handles=patches,
             loc='upper left',
-            fontsize=10,
-            facecolor='#1a1a2e',
-            edgecolor='white',
-            labelcolor='white',
+            fontsize=9,
+            facecolor='white',
+            edgecolor='#E5E7EB',
+            labelcolor='#374151',
             title='Gate Types',
-            title_fontsize=12,
+            title_fontsize=10,
+            framealpha=0.95,
+            borderpad=0.8,
         )
-        ax.set_title('Legend', color='white', fontsize=14, pad=10)
+        legend.get_title().set_color('#1F2937')
     
     def create_animation(self, output_path: str, n_frames_per_layer: int = 15):
         """Create the animated GIF."""
-        ax_main = self.axes[0]
-        ax_info = self.axes[1]
+        ax = self.ax
         
         # Draw static edges
-        self._draw_static_elements(ax_main)
-        self._create_legend(ax_info)
+        self._draw_static_elements(ax)
+        self._create_legend(ax)
         
         # Compute total frames
         n_states = len(self.node_states)
         total_frames = (n_states - 1) * n_frames_per_layer + n_frames_per_layer
         
-        # Create colormap for node activations
-        cmap = LinearSegmentedColormap.from_list(
-            'activation', ['#0f3460', '#e94560', '#ffffff']
-        )
+        # Get global min/max across all states for consistent colorbar
+        all_states = np.concatenate(self.node_states)
+        vmin, vmax = all_states.min(), all_states.max()
+        norm = Normalize(vmin=vmin, vmax=vmax)
         
         # Initialize node circles
         node_circles = []
         node_labels = []
+        base_radius = 0.1 if self.n_qubits > 20 else 0.12
+        font_size = 7 if self.n_qubits > 20 else 9
+        
         for i in range(self.n_qubits):
             x, y = self.positions[i]
             circle = plt.Circle(
-                (x, y), 0.12, 
-                facecolor='#0f3460',
-                edgecolor='white',
-                linewidth=2,
+                (x, y), base_radius, 
+                facecolor=self.cmap(0.5),
+                edgecolor='#374151',
+                linewidth=1.5,
                 zorder=10,
             )
-            ax_main.add_patch(circle)
+            ax.add_patch(circle)
             node_circles.append(circle)
             
-            # Add qubit label
-            label = ax_main.text(
+            label = ax.text(
                 x, y, f'q{i}',
                 ha='center', va='center',
-                fontsize=9, fontweight='bold',
+                fontsize=font_size, fontweight='bold',
                 color='white',
                 zorder=11,
             )
             node_labels.append(label)
         
-        # Add title and layer indicator
-        title = ax_main.set_title(
-            'Quantum Circuit GNN Forward Pass',
-            color='white', fontsize=16, pad=20,
+        # Title
+        ax.set_title(
+            'GNN Forward Pass',
+            color='#1F2937', fontsize=16, pad=15,
             fontweight='bold',
         )
         
-        layer_text = ax_main.text(
-            0, -1.5, 'Layer: Input',
+        # Layer indicator text
+        layer_text = ax.text(
+            0, -1.45, 'Input Features',
             ha='center', va='center',
-            fontsize=14, color='#e94560',
-            fontweight='bold',
+            fontsize=12, color='#6B7280',
+            fontweight='medium',
         )
         
-        # Add info panel elements
-        info_elements = {}
-        
-        # Circuit info
-        ax_info.text(
-            0.5, 0.95, f'Circuit: {self.n_qubits} qubits',
-            transform=ax_info.transAxes,
-            ha='center', fontsize=12, color='white',
-        )
-        ax_info.text(
-            0.5, 0.88, f'{len(self.gates)} gates',
-            transform=ax_info.transAxes,
-            ha='center', fontsize=11, color='#aaa',
-        )
-        ax_info.text(
-            0.5, 0.81, f'{len(self.edges)} edges',
-            transform=ax_info.transAxes,
-            ha='center', fontsize=11, color='#aaa',
+        # Circuit info in corner
+        info_text = f'{self.n_qubits} qubits · {len(self.gates)} gates'
+        ax.text(
+            0.98, 0.02, info_text,
+            transform=ax.transAxes,
+            ha='right', va='bottom',
+            fontsize=9, color='#9CA3AF',
         )
         
-        # Activation bar chart
-        bar_ax = ax_info.inset_axes([0.1, 0.1, 0.8, 0.35])
-        bar_ax.set_facecolor('#0f3460')
-        bar_ax.tick_params(colors='white', labelsize=8)
-        bar_ax.set_xlabel('Qubit', color='white', fontsize=10)
-        bar_ax.set_ylabel('Activation', color='white', fontsize=10)
-        for spine in bar_ax.spines.values():
-            spine.set_color('white')
+        # Add colorbar
+        sm = cm.ScalarMappable(cmap=self.cmap, norm=norm)
+        sm.set_array([])
+        cbar_ax = self.fig.add_axes([0.88, 0.25, 0.02, 0.5])
+        cbar = self.fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label('Node Activation', fontsize=10, color='#374151')
+        cbar.ax.tick_params(labelsize=8, colors='#374151')
+        cbar.outline.set_edgecolor('#E5E7EB')
         
-        bars = bar_ax.bar(
-            range(self.n_qubits),
-            np.zeros(self.n_qubits),
-            color='#e94560',
-            edgecolor='white',
-            linewidth=0.5,
-        )
-        bar_ax.set_xlim(-0.5, self.n_qubits - 0.5)
-        bar_ax.set_ylim(-1, 1)
-        
-        # Message passing visualization
         message_artists = []
         
         def get_interpolated_state(frame):
@@ -383,30 +352,24 @@ class GNNVisualizer:
             state1 = self.node_states[layer_idx]
             state2 = self.node_states[layer_idx + 1]
             
-            # Smooth interpolation
-            t_smooth = t * t * (3 - 2 * t)  # Smoothstep
-            
+            t_smooth = t * t * (3 - 2 * t)
             return state1 + t_smooth * (state2 - state1), layer_idx, t
         
         def animate(frame):
             state, layer_idx, t = get_interpolated_state(frame)
             
-            # Normalize state for coloring
-            state_norm = (state - state.min()) / (state.max() - state.min() + 1e-6)
+            state_norm = norm(state)
             
-            # Update node colors
             for i, (circle, val) in enumerate(zip(node_circles, state_norm)):
-                color = cmap(val)
+                color = self.cmap(val)
                 circle.set_facecolor(color)
                 
-                # Pulse effect during transition
                 if t > 0 and t < 1:
-                    pulse = 1 + 0.1 * np.sin(t * np.pi)
-                    circle.set_radius(0.12 * pulse)
+                    pulse = 1 + 0.08 * np.sin(t * np.pi)
+                    circle.set_radius(base_radius * pulse)
                 else:
-                    circle.set_radius(0.12)
+                    circle.set_radius(base_radius)
             
-            # Update layer text
             if layer_idx == 0:
                 layer_name = "Input Features"
             elif layer_idx == 1:
@@ -414,22 +377,14 @@ class GNNVisualizer:
             else:
                 layer_name = f"Message Passing Layer {layer_idx - 1}"
             
-            layer_text.set_text(f'{layer_name}')
+            layer_text.set_text(layer_name)
             
-            # Update activation bars
-            for bar, val in zip(bars, state):
-                bar.set_height(val)
-                color = cmap((val - state.min()) / (state.max() - state.min() + 1e-6))
-                bar.set_facecolor(color)
-            
-            # Clear old message artists
             for artist in message_artists:
                 artist.remove()
             message_artists.clear()
             
-            # Draw message passing arrows during transition
             if t > 0.1 and t < 0.9 and layer_idx > 0:
-                for edge in self.edges[:min(20, len(self.edges))]:  # Limit for clarity
+                for edge in self.edges[:min(25, len(self.edges))]:
                     if edge['is_self_loop']:
                         continue
                     
@@ -437,27 +392,24 @@ class GNNVisualizer:
                     x1, y1 = self.positions[src]
                     x2, y2 = self.positions[dst]
                     
-                    # Interpolate message position
                     msg_t = (t - 0.1) / 0.8
                     msg_x = x1 + msg_t * (x2 - x1)
                     msg_y = y1 + msg_t * (y2 - y1)
                     
-                    # Draw message particle
                     color = get_gate_color(edge['gate_type'])
                     particle = plt.Circle(
-                        (msg_x, msg_y), 0.04,
+                        (msg_x, msg_y), 0.03,
                         facecolor=color,
                         edgecolor='white',
-                        linewidth=1,
-                        alpha=0.8,
+                        linewidth=0.5,
+                        alpha=0.9,
                         zorder=15,
                     )
-                    ax_main.add_patch(particle)
+                    ax.add_patch(particle)
                     message_artists.append(particle)
             
-            return node_circles + [layer_text] + list(bars) + message_artists
+            return node_circles + [layer_text] + message_artists
         
-        # Create animation
         anim = FuncAnimation(
             self.fig, animate,
             frames=total_frames,
@@ -465,22 +417,58 @@ class GNNVisualizer:
             blit=False,
         )
         
-        # Add overall title
-        self.fig.suptitle(
-            'Graph Neural Network on Quantum Circuit',
-            fontsize=18, color='white', fontweight='bold',
-            y=0.98,
-        )
+        plt.subplots_adjust(left=0.05, right=0.85, top=0.92, bottom=0.08)
         
-        plt.tight_layout()
-        
-        # Save as GIF
         print(f"Saving animation to {output_path}...")
         writer = PillowWriter(fps=self.fps)
         anim.save(output_path, writer=writer, dpi=self.dpi)
         print(f"Animation saved!")
         
         plt.close()
+
+
+def train_model(
+    model: torch.nn.Module,
+    data_path: Path,
+    circuits_dir: Path,
+    epochs: int = 50,
+    device: str = "cpu",
+) -> torch.nn.Module:
+    """Train the GNN model on the dataset."""
+    print("Loading training data...")
+    train_loader, val_loader = create_graph_data_loaders(
+        data_path=data_path,
+        circuits_dir=circuits_dir,
+        batch_size=16,
+        val_fraction=0.2,
+        seed=42,
+    )
+    print(f"  Train samples: {len(train_loader.dataset)}")
+    print(f"  Val samples: {len(val_loader.dataset)}")
+    
+    print(f"Training model for up to {epochs} epochs...")
+    trainer = GNNTrainer(
+        model=model,
+        device=device,
+        lr=1e-3,
+        weight_decay=1e-4,
+        use_ordinal=True,
+    )
+    
+    trainer.fit(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=epochs,
+        early_stopping_patience=15,
+        verbose=False,
+        show_progress=True,
+    )
+    
+    final_metrics = trainer.evaluate(val_loader)
+    print(f"  Validation accuracy: {final_metrics['threshold_accuracy']:.3f}")
+    print(f"  Validation runtime MSE: {final_metrics['runtime_mse']:.3f}")
+    
+    return model
 
 
 def main():
@@ -509,16 +497,32 @@ def main():
         help="DPI for output (default: 100)"
     )
     parser.add_argument(
-        "--hidden-dim", type=int, default=64,
-        help="Model hidden dimension (default: 64)"
+        "--hidden-dim", type=int, default=48,
+        help="Model hidden dimension (default: 48)"
     )
     parser.add_argument(
-        "--num-layers", type=int, default=4,
-        help="Number of GNN layers (default: 4)"
+        "--num-layers", type=int, default=3,
+        help="Number of GNN layers (default: 3)"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=50,
+        help="Training epochs (default: 50)"
+    )
+    parser.add_argument(
+        "--no-train", action="store_true",
+        help="Skip training (use random weights)"
+    )
+    parser.add_argument(
+        "--device", type=str, default="cpu",
+        help="Device for training (cpu/cuda/mps)"
     )
     args = parser.parse_args()
     
-    # Load or create circuit
+    project_root = Path(__file__).parent.parent
+    data_path = project_root / "data" / "hackathon_public.json"
+    circuits_dir = project_root / "circuits"
+    
+    # Load or create circuit for visualization
     if args.circuit:
         circuit_path = Path(args.circuit)
         if not circuit_path.exists():
@@ -527,7 +531,6 @@ def main():
         qasm_text = circuit_path.read_text()
         print(f"Loaded circuit: {circuit_path}")
     else:
-        # Use a nice example circuit (GHZ-like)
         qasm_text = """
 OPENQASM 2.0;
 include "qelib1.inc";
@@ -553,7 +556,6 @@ cx q[3],q[4];
 """
         print("Using example GHZ-like circuit")
     
-    # Create model
     from gnn.graph_builder import NODE_FEAT_DIM, EDGE_FEAT_DIM
     
     print(f"Creating GNN model (hidden_dim={args.hidden_dim}, num_layers={args.num_layers})...")
@@ -566,7 +568,21 @@ cx q[3],q[4];
         num_layers=args.num_layers,
     )
     
-    # Create visualizer
+    if not args.no_train:
+        if not data_path.exists():
+            print(f"Warning: Data file not found at {data_path}")
+            print("Skipping training, using random weights.")
+        else:
+            model = train_model(
+                model=model,
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                epochs=args.epochs,
+                device=args.device,
+            )
+    else:
+        print("Skipping training (--no-train flag set)")
+    
     print("Creating visualization...")
     visualizer = GNNVisualizer(
         qasm_text=qasm_text,
@@ -576,7 +592,6 @@ cx q[3],q[4];
         dpi=args.dpi,
     )
     
-    # Generate animation
     output_path = Path(args.output)
     if not output_path.parent.exists():
         output_path.parent.mkdir(parents=True, exist_ok=True)

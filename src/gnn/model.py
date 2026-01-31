@@ -4,7 +4,8 @@ Graph Neural Network for quantum circuit threshold and runtime prediction.
 Architecture:
 - Per-gate-type learnable embeddings for message passing
 - Graph-level readout with global feature conditioning
-- Multi-task heads for threshold classification and runtime regression
+- Multi-task heads: ordinal regression for thresholds, regression for runtime
+- Improved regularization for small datasets
 """
 
 from typing import Tuple, Optional
@@ -16,6 +17,104 @@ from torch_geometric.nn import MessagePassing, global_mean_pool, global_max_pool
 from torch_geometric.utils import add_self_loops
 
 from .graph_builder import NUM_GATE_TYPES, NODE_FEAT_DIM, EDGE_FEAT_DIM, GLOBAL_FEAT_DIM_BASE
+
+
+class OrdinalRegressionHead(nn.Module):
+    """
+    Ordinal regression head for threshold prediction.
+    
+    Instead of treating thresholds as independent classes, ordinal regression
+    respects the natural ordering: 1 < 2 < 4 < 8 < ... < 256.
+    
+    Predicts K-1 cumulative probabilities P(Y > k) for k in 1..K-1.
+    The predicted class is the largest k where P(Y > k) > 0.5.
+    """
+    
+    def __init__(self, in_features: int, num_classes: int = 9):
+        super().__init__()
+        self.num_classes = num_classes
+        
+        # Shared feature transformation
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, in_features),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+        )
+        
+        # K-1 binary classifiers for cumulative probabilities
+        # Each predicts P(Y > k) for k = 0, 1, ..., K-2
+        self.cumulative_logits = nn.Linear(in_features, num_classes - 1)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Returns logits for ordinal regression.
+        Shape: [batch_size, num_classes - 1]
+        """
+        x = self.shared(x)
+        return self.cumulative_logits(x)
+    
+    def predict_class(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Convert cumulative logits to class predictions.
+        """
+        # P(Y > k) for each k
+        probs = torch.sigmoid(logits)
+        
+        # Predicted class is number of thresholds exceeded
+        # Count how many P(Y > k) > 0.5
+        predictions = (probs > 0.5).sum(dim=1)
+        
+        return predictions
+    
+    def to_class_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Convert cumulative logits to class probabilities.
+        P(Y = k) = P(Y > k-1) - P(Y > k)
+        """
+        probs_exceed = torch.sigmoid(logits)
+        
+        # Add boundaries: P(Y > -1) = 1, P(Y > K-1) = 0
+        ones = torch.ones(logits.shape[0], 1, device=logits.device)
+        zeros = torch.zeros(logits.shape[0], 1, device=logits.device)
+        
+        probs_exceed_full = torch.cat([ones, probs_exceed, zeros], dim=1)
+        
+        # P(Y = k) = P(Y > k-1) - P(Y > k)
+        class_probs = probs_exceed_full[:, :-1] - probs_exceed_full[:, 1:]
+        
+        return class_probs
+
+
+class OrdinalRegressionLoss(nn.Module):
+    """
+    Loss function for ordinal regression.
+    
+    Uses binary cross-entropy on cumulative probabilities.
+    """
+    
+    def __init__(self, num_classes: int = 9):
+        super().__init__()
+        self.num_classes = num_classes
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: Cumulative logits [batch_size, num_classes - 1]
+            targets: Class labels [batch_size] in range [0, num_classes - 1]
+        """
+        # Create cumulative targets
+        # For class k, we want P(Y > j) = 1 for j < k, P(Y > j) = 0 for j >= k
+        batch_size = targets.shape[0]
+        device = logits.device
+        
+        cumulative_targets = torch.zeros_like(logits)
+        for i in range(self.num_classes - 1):
+            cumulative_targets[:, i] = (targets > i).float()
+        
+        # Binary cross-entropy loss
+        loss = F.binary_cross_entropy_with_logits(logits, cumulative_targets)
+        
+        return loss
 
 
 class GateTypeMessagePassing(MessagePassing):
@@ -100,10 +199,10 @@ class QuantumCircuitGNN(nn.Module):
     
     Architecture:
     1. Node embedding projection
-    2. Multiple GateTypeMessagePassing layers
+    2. Multiple GateTypeMessagePassing layers with dropout
     3. Graph-level pooling (mean + max + sum)
     4. Concatenation with global features
-    5. Task-specific prediction heads
+    5. Task-specific prediction heads (ordinal regression for thresholds)
     """
     
     def __init__(
@@ -115,18 +214,22 @@ class QuantumCircuitGNN(nn.Module):
         num_layers: int = 4,
         num_threshold_classes: int = 9,
         dropout: float = 0.1,
+        use_ordinal: bool = True,
     ):
         super().__init__()
         
         self.node_feat_dim = node_feat_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
+        self.use_ordinal = use_ordinal
+        self.num_threshold_classes = num_threshold_classes
         
-        # Initial node projection
+        # Initial node projection with dropout
         self.node_embed = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
         )
         
         # Message passing layers
@@ -139,6 +242,9 @@ class QuantumCircuitGNN(nn.Module):
             for _ in range(num_layers)
         ])
         
+        # Dropout after each message passing layer
+        self.mp_dropout = nn.Dropout(dropout)
+        
         # Graph pooling produces 3 * hidden_dim features (mean, max, sum)
         pool_dim = 3 * hidden_dim
         
@@ -147,6 +253,7 @@ class QuantumCircuitGNN(nn.Module):
             nn.Linear(global_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
         )
         
         # Combined representation processing
@@ -156,14 +263,23 @@ class QuantumCircuitGNN(nn.Module):
             nn.Linear(combined_dim, hidden_dim * 2),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim * 2),
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
         
         # Task-specific heads
-        self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
-        self.runtime_head = nn.Linear(hidden_dim, 1)
+        if use_ordinal:
+            self.threshold_head = OrdinalRegressionHead(hidden_dim, num_threshold_classes)
+        else:
+            self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
+        
+        self.runtime_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
     
     def forward(
         self,
@@ -186,16 +302,16 @@ class QuantumCircuitGNN(nn.Module):
             global_features: Global/circuit-level features [batch_size, global_feat_dim]
         
         Returns:
-            threshold_logits: [batch_size, num_threshold_classes]
+            threshold_logits: [batch_size, num_threshold_classes] or [batch_size, num_classes-1] for ordinal
             runtime_pred: [batch_size]
         """
         # Initial node embedding
         h = self.node_embed(x)
         
-        # Message passing
+        # Message passing with dropout
         for mp_layer in self.mp_layers:
             h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
-            h = h + h_new  # residual connection
+            h = h + self.mp_dropout(h_new)  # residual connection with dropout
         
         # Graph-level pooling (multiple aggregations for richer representation)
         h_mean = global_mean_pool(h, batch)
@@ -215,6 +331,13 @@ class QuantumCircuitGNN(nn.Module):
         runtime_pred = self.runtime_head(combined).squeeze(-1)
         
         return threshold_logits, runtime_pred
+    
+    def predict_threshold_class(self, threshold_logits: torch.Tensor) -> torch.Tensor:
+        """Convert threshold logits to class predictions."""
+        if self.use_ordinal:
+            return self.threshold_head.predict_class(threshold_logits)
+        else:
+            return threshold_logits.argmax(dim=1)
 
 
 class QuantumCircuitGNNWithAttention(nn.Module):
@@ -232,17 +355,21 @@ class QuantumCircuitGNNWithAttention(nn.Module):
         num_threshold_classes: int = 9,
         num_heads: int = 4,
         dropout: float = 0.1,
+        use_ordinal: bool = True,
     ):
         super().__init__()
         
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
+        self.use_ordinal = use_ordinal
+        self.num_threshold_classes = num_threshold_classes
         
         # Initial node projection
         self.node_embed = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
         )
         
         # Message passing layers
@@ -255,6 +382,8 @@ class QuantumCircuitGNNWithAttention(nn.Module):
             for _ in range(num_layers)
         ])
         
+        self.mp_dropout = nn.Dropout(dropout)
+        
         # Attention pooling
         self.pool_attention = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -262,7 +391,6 @@ class QuantumCircuitGNNWithAttention(nn.Module):
             nn.Linear(hidden_dim, num_heads, bias=False),
         )
         
-        # After attention: num_heads * hidden_dim
         pool_dim = num_heads * hidden_dim
         
         # Global feature projection
@@ -270,23 +398,32 @@ class QuantumCircuitGNNWithAttention(nn.Module):
             nn.Linear(global_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
         )
         
-        # Combined representation
         combined_dim = pool_dim + hidden_dim
         
         self.combined_mlp = nn.Sequential(
             nn.Linear(combined_dim, hidden_dim * 2),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim * 2),
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
         
         # Task heads
-        self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
-        self.runtime_head = nn.Linear(hidden_dim, 1)
+        if use_ordinal:
+            self.threshold_head = OrdinalRegressionHead(hidden_dim, num_threshold_classes)
+        else:
+            self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
+        
+        self.runtime_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
     
     def forward(
         self,
@@ -297,49 +434,47 @@ class QuantumCircuitGNNWithAttention(nn.Module):
         batch: torch.Tensor,
         global_features: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Initial embedding
         h = self.node_embed(x)
         
-        # Message passing with residual
         for mp_layer in self.mp_layers:
             h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
-            h = h + h_new
+            h = h + self.mp_dropout(h_new)
         
-        # Attention-based pooling
-        attn_scores = self.pool_attention(h)  # [total_nodes, num_heads]
+        attn_scores = self.pool_attention(h)
         
-        # Compute attention weights per graph
         batch_size = global_features.shape[0]
         num_heads = attn_scores.shape[1]
         
-        # Softmax within each graph
         attn_weights = torch.zeros_like(attn_scores)
         for i in range(batch_size):
             mask = batch == i
             attn_weights[mask] = F.softmax(attn_scores[mask], dim=0)
         
-        # Weighted sum pooling for each head
         h_pooled_list = []
         for head in range(num_heads):
-            weights = attn_weights[:, head:head+1]  # [total_nodes, 1]
+            weights = attn_weights[:, head:head+1]
             h_weighted = h * weights
-            h_pooled = global_add_pool(h_weighted, batch)  # [batch_size, hidden_dim]
+            h_pooled = global_add_pool(h_weighted, batch)
             h_pooled_list.append(h_pooled)
         
-        h_graph = torch.cat(h_pooled_list, dim=-1)  # [batch_size, num_heads * hidden_dim]
+        h_graph = torch.cat(h_pooled_list, dim=-1)
         
-        # Global features
         g = self.global_proj(global_features)
         
-        # Combine
         combined = torch.cat([h_graph, g], dim=-1)
         combined = self.combined_mlp(combined)
         
-        # Predictions
         threshold_logits = self.threshold_head(combined)
         runtime_pred = self.runtime_head(combined).squeeze(-1)
         
         return threshold_logits, runtime_pred
+    
+    def predict_threshold_class(self, threshold_logits: torch.Tensor) -> torch.Tensor:
+        """Convert threshold logits to class predictions."""
+        if self.use_ordinal:
+            return self.threshold_head.predict_class(threshold_logits)
+        else:
+            return threshold_logits.argmax(dim=1)
 
 
 def create_gnn_model(
@@ -351,9 +486,23 @@ def create_gnn_model(
     num_layers: int = 4,
     num_threshold_classes: int = 9,
     dropout: float = 0.1,
+    use_ordinal: bool = True,
     **kwargs,
 ) -> nn.Module:
-    """Factory function to create GNN models."""
+    """
+    Factory function to create GNN models.
+    
+    Args:
+        model_type: "basic" or "attention"
+        node_feat_dim: Node feature dimension
+        edge_feat_dim: Edge feature dimension
+        global_feat_dim: Global feature dimension
+        hidden_dim: Hidden layer dimension
+        num_layers: Number of message passing layers
+        num_threshold_classes: Number of threshold classes (9)
+        dropout: Dropout rate
+        use_ordinal: Use ordinal regression for threshold prediction
+    """
     if model_type == "basic":
         return QuantumCircuitGNN(
             node_feat_dim=node_feat_dim,
@@ -363,6 +512,7 @@ def create_gnn_model(
             num_layers=num_layers,
             num_threshold_classes=num_threshold_classes,
             dropout=dropout,
+            use_ordinal=use_ordinal,
         )
     elif model_type == "attention":
         return QuantumCircuitGNNWithAttention(
@@ -373,6 +523,7 @@ def create_gnn_model(
             num_layers=num_layers,
             num_threshold_classes=num_threshold_classes,
             dropout=dropout,
+            use_ordinal=use_ordinal,
             num_heads=kwargs.get("num_heads", 4),
         )
     else:

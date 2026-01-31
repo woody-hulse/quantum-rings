@@ -106,6 +106,7 @@ def build_graph_from_qasm(
     family: Optional[str] = None,
     family_to_idx: Optional[Dict[str, int]] = None,
     num_families: int = 20,
+    rich_features: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """
     Build a graph representation from QASM text.
@@ -123,9 +124,14 @@ def build_graph_from_qasm(
         n_qubits = 1  # fallback
     
     # Node features: per-qubit gate counts and position
-    # [n_1q_gates_per_type..., n_2q_gates_involved, normalized_position]
     node_1q_counts = torch.zeros(n_qubits, len(GATE_1Q))
     node_2q_counts = torch.zeros(n_qubits, 1)
+    
+    # Rich node features: temporal info per qubit
+    node_first_2q_pos = torch.ones(n_qubits, 1)  # first 2Q gate position (1.0 = never)
+    node_last_2q_pos = torch.zeros(n_qubits, 1)   # last 2Q gate position (0.0 = never)
+    node_unique_neighbors = [set() for _ in range(n_qubits)]  # unique qubits interacted with
+    node_total_span = torch.zeros(n_qubits, 1)  # sum of interaction distances
     
     # Edge lists
     edge_src = []
@@ -133,11 +139,15 @@ def build_graph_from_qasm(
     edge_gate_type = []
     edge_position = []
     edge_params = []
+    edge_qubit_dist = []  # distance between qubits
+    edge_cumulative_idx = []  # cumulative edge count at this position
     
     total_gates = len(gates) if gates else 1
+    cumulative_2q = 0
     
     for gate in gates:
         gate_idx = GATE_TO_IDX.get(gate.gate_type, 0)
+        norm_pos = gate.position / total_gates
         
         if gate.gate_type in GATE_1Q:
             if len(gate.qubits) >= 1 and gate.qubits[0] < n_qubits:
@@ -149,8 +159,10 @@ def build_graph_from_qasm(
                 edge_src.append(q)
                 edge_dst.append(q)
                 edge_gate_type.append(gate_idx)
-                edge_position.append(gate.position / total_gates)
+                edge_position.append(norm_pos)
                 edge_params.append(gate.params[0] if gate.params else 0.0)
+                edge_qubit_dist.append(0.0)
+                edge_cumulative_idx.append(cumulative_2q / max(total_gates, 1))
         
         elif gate.gate_type in GATE_2Q:
             if len(gate.qubits) >= 2:
@@ -159,15 +171,33 @@ def build_graph_from_qasm(
                     node_2q_counts[q_ctrl] += 1
                     node_2q_counts[q_targ] += 1
                     
+                    # Update temporal features
+                    node_first_2q_pos[q_ctrl] = min(node_first_2q_pos[q_ctrl].item(), norm_pos)
+                    node_first_2q_pos[q_targ] = min(node_first_2q_pos[q_targ].item(), norm_pos)
+                    node_last_2q_pos[q_ctrl] = max(node_last_2q_pos[q_ctrl].item(), norm_pos)
+                    node_last_2q_pos[q_targ] = max(node_last_2q_pos[q_targ].item(), norm_pos)
+                    
+                    # Update neighbor sets
+                    node_unique_neighbors[q_ctrl].add(q_targ)
+                    node_unique_neighbors[q_targ].add(q_ctrl)
+                    
+                    # Update span
+                    span = abs(q_targ - q_ctrl)
+                    node_total_span[q_ctrl] += span
+                    node_total_span[q_targ] += span
+                    
+                    cumulative_2q += 1
+                    
                     # Directed edge: control -> target
                     edge_src.append(q_ctrl)
                     edge_dst.append(q_targ)
                     edge_gate_type.append(gate_idx)
-                    edge_position.append(gate.position / total_gates)
+                    edge_position.append(norm_pos)
                     edge_params.append(gate.params[0] if gate.params else 0.0)
+                    edge_qubit_dist.append(span / max(n_qubits - 1, 1))
+                    edge_cumulative_idx.append(cumulative_2q / max(total_gates, 1))
         
         elif gate.gate_type in GATE_3Q:
-            # Decompose into pairs: ctrl1->target, ctrl2->target
             if len(gate.qubits) >= 3:
                 q1, q2, q_targ = gate.qubits[0], gate.qubits[1], gate.qubits[2]
                 for q_ctrl in [q1, q2]:
@@ -175,26 +205,65 @@ def build_graph_from_qasm(
                         node_2q_counts[q_ctrl] += 1
                         node_2q_counts[q_targ] += 1
                         
+                        node_first_2q_pos[q_ctrl] = min(node_first_2q_pos[q_ctrl].item(), norm_pos)
+                        node_first_2q_pos[q_targ] = min(node_first_2q_pos[q_targ].item(), norm_pos)
+                        node_last_2q_pos[q_ctrl] = max(node_last_2q_pos[q_ctrl].item(), norm_pos)
+                        node_last_2q_pos[q_targ] = max(node_last_2q_pos[q_targ].item(), norm_pos)
+                        
+                        node_unique_neighbors[q_ctrl].add(q_targ)
+                        node_unique_neighbors[q_targ].add(q_ctrl)
+                        
+                        span = abs(q_targ - q_ctrl)
+                        node_total_span[q_ctrl] += span
+                        node_total_span[q_targ] += span
+                        
+                        cumulative_2q += 1
+                        
                         edge_src.append(q_ctrl)
                         edge_dst.append(q_targ)
                         edge_gate_type.append(gate_idx)
-                        edge_position.append(gate.position / total_gates)
+                        edge_position.append(norm_pos)
                         edge_params.append(gate.params[0] if gate.params else 0.0)
+                        edge_qubit_dist.append(span / max(n_qubits - 1, 1))
+                        edge_cumulative_idx.append(cumulative_2q / max(total_gates, 1))
     
-    # Normalize node features
+    # Compute derived node features
     node_positions = torch.arange(n_qubits, dtype=torch.float32) / max(n_qubits - 1, 1)
     node_positions = node_positions.unsqueeze(1)
     
-    # Log-transform counts
     node_1q_log = torch.log1p(node_1q_counts)
     node_2q_log = torch.log1p(node_2q_counts)
     
+    # Unique neighbor count (normalized by n_qubits)
+    node_degree = torch.tensor(
+        [len(neighbors) for neighbors in node_unique_neighbors], 
+        dtype=torch.float32
+    ).unsqueeze(1) / max(n_qubits - 1, 1)
+    
+    # Normalize total span
+    node_avg_span = node_total_span / (node_2q_counts + 1)
+    
+    # Activity window (duration qubit is involved in 2Q gates)
+    node_activity_window = node_last_2q_pos - node_first_2q_pos
+    
     # Combine node features
-    x = torch.cat([
-        node_1q_log,           # [n_qubits, 15] - 1Q gate counts per type
-        node_2q_log,           # [n_qubits, 1] - 2Q involvement count
-        node_positions,        # [n_qubits, 1] - normalized position
-    ], dim=1)
+    if rich_features:
+        x = torch.cat([
+            node_1q_log,           # [n_qubits, 15] - 1Q gate counts per type
+            node_2q_log,           # [n_qubits, 1] - 2Q involvement count
+            node_positions,        # [n_qubits, 1] - normalized position in register
+            node_first_2q_pos,     # [n_qubits, 1] - when first entangled
+            node_last_2q_pos,      # [n_qubits, 1] - when last entangled  
+            node_activity_window,  # [n_qubits, 1] - duration of activity
+            node_degree,           # [n_qubits, 1] - unique interaction partners
+            node_avg_span,         # [n_qubits, 1] - average interaction distance
+        ], dim=1)
+    else:
+        x = torch.cat([
+            node_1q_log,
+            node_2q_log,
+            node_positions,
+        ], dim=1)
     
     # Build edge tensors
     if edge_src:
@@ -202,38 +271,49 @@ def build_graph_from_qasm(
         edge_gate_type_tensor = torch.tensor(edge_gate_type, dtype=torch.long)
         edge_position_tensor = torch.tensor(edge_position, dtype=torch.float32).unsqueeze(1)
         edge_params_tensor = torch.tensor(edge_params, dtype=torch.float32).unsqueeze(1)
+        edge_dist_tensor = torch.tensor(edge_qubit_dist, dtype=torch.float32).unsqueeze(1)
+        edge_cumul_tensor = torch.tensor(edge_cumulative_idx, dtype=torch.float32).unsqueeze(1)
         
-        # Edge attr: [gate_type_idx, temporal_position, param_value]
-        # Gate type will be embedded by the model
-        edge_attr = torch.cat([
-            edge_position_tensor,
-            edge_params_tensor,
-        ], dim=1)
+        if rich_features:
+            edge_attr = torch.cat([
+                edge_position_tensor,   # temporal position
+                edge_params_tensor,     # gate parameter
+                edge_dist_tensor,       # qubit distance (normalized)
+                edge_cumul_tensor,      # cumulative 2Q gate count
+            ], dim=1)
+        else:
+            edge_attr = torch.cat([
+                edge_position_tensor,
+                edge_params_tensor,
+            ], dim=1)
     else:
-        # No edges - create dummy self-loop on node 0
         edge_index = torch.tensor([[0], [0]], dtype=torch.long)
         edge_gate_type_tensor = torch.tensor([0], dtype=torch.long)
-        edge_attr = torch.zeros(1, 2)
+        edge_attr = torch.zeros(1, 4 if rich_features else 2)
     
     # Global features
     backend_idx = 1.0 if backend == "GPU" else 0.0
     precision_idx = 1.0 if precision == "double" else 0.0
     
+    # Compute graph-level statistics
+    n_2q_gates = cumulative_2q
+    gate_density = n_2q_gates / max(n_qubits, 1)
+    
     global_feats = [
-        float(n_qubits) / 130.0,  # normalized n_qubits (max ~130)
-        float(len(gates)) / 1000.0,  # normalized gate count
+        float(n_qubits) / 130.0,
+        float(len(gates)) / 1000.0,
+        float(n_2q_gates) / 500.0,
+        gate_density / 10.0,
         backend_idx,
         precision_idx,
     ]
     
-    # Add family one-hot if available
     if family and family_to_idx:
         family_onehot = [0.0] * num_families
         if family in family_to_idx:
             family_onehot[family_to_idx[family]] = 1.0
         global_feats.extend(family_onehot)
     
-    # Store as 2D tensor [1, feat_dim] so PyG stacks correctly during batching
     global_features = torch.tensor(global_feats, dtype=torch.float32).unsqueeze(0)
     
     return {
@@ -262,10 +342,12 @@ def build_graph_from_file(
     )
 
 
-# Feature dimensions for external reference
-NODE_FEAT_DIM = len(GATE_1Q) + 1 + 1  # 1Q counts + 2Q count + position = 17
-EDGE_FEAT_DIM = 2  # temporal position + param value
-GLOBAL_FEAT_DIM_BASE = 4  # n_qubits, n_gates, backend, precision
+# Feature dimensions for external reference (with rich_features=True)
+NODE_FEAT_DIM = len(GATE_1Q) + 1 + 1 + 5  # 1Q counts + 2Q count + position + 5 temporal = 22
+NODE_FEAT_DIM_BASIC = len(GATE_1Q) + 1 + 1  # without rich features = 17
+EDGE_FEAT_DIM = 4  # temporal position + param + qubit_dist + cumulative
+EDGE_FEAT_DIM_BASIC = 2  # without rich features
+GLOBAL_FEAT_DIM_BASE = 6  # n_qubits, n_gates, n_2q_gates, gate_density, backend, precision
 
 
 if __name__ == "__main__":

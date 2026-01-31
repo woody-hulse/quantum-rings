@@ -86,6 +86,7 @@ class LightGBMModel(BaseModel):
         train_loader: DataLoader,
         val_loader: DataLoader,
         verbose: bool = False,
+        show_progress: bool = True,
     ) -> Dict[str, Any]:
         X_train, y_thresh_train, y_runtime_train = self._extract_data(train_loader)
         X_val, y_thresh_val, y_runtime_val = self._extract_data(val_loader)

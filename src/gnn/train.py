@@ -2,13 +2,19 @@
 """
 Training script for the Quantum Circuit GNN.
 
+Improvements:
+- Data augmentation (qubit permutation, edge dropout, feature noise)
+- Ordinal regression for threshold prediction
+- Richer node and edge features
+- Improved regularization
+
 Uses the same evaluation metrics as the main codebase for fair comparison.
 """
 
 import sys
 from pathlib import Path
 import argparse
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional, Callable
 import time
 
 import numpy as np
@@ -22,7 +28,7 @@ from tqdm import tqdm
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from gnn.model import create_gnn_model, QuantumCircuitGNN
+from gnn.model import create_gnn_model, QuantumCircuitGNN, OrdinalRegressionLoss
 from gnn.dataset import (
     create_graph_data_loaders,
     create_kfold_graph_data_loaders,
@@ -30,6 +36,7 @@ from gnn.dataset import (
     GLOBAL_FEAT_DIM,
 )
 from gnn.graph_builder import NODE_FEAT_DIM, EDGE_FEAT_DIM
+from gnn.augmentation import get_train_augmentation, AugmentedDataset
 from scoring import compute_challenge_score
 
 
@@ -44,11 +51,15 @@ class GNNTrainer:
         weight_decay: float = 1e-4,
         threshold_weight: float = 1.0,
         runtime_weight: float = 1.0,
+        use_ordinal: bool = True,
+        augmentation: Optional[Callable] = None,
     ):
         self.model = model.to(device)
         self.device = device
         self.threshold_weight = threshold_weight
         self.runtime_weight = runtime_weight
+        self.use_ordinal = use_ordinal
+        self.augmentation = augmentation
         
         self.optimizer = optim.AdamW(
             model.parameters(), lr=lr, weight_decay=weight_decay
@@ -57,11 +68,14 @@ class GNNTrainer:
             self.optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
         )
         
-        self.threshold_criterion = nn.CrossEntropyLoss()
-        self.runtime_criterion = nn.MSELoss()
+        if use_ordinal:
+            self.threshold_criterion = OrdinalRegressionLoss(num_classes=9)
+        else:
+            self.threshold_criterion = nn.CrossEntropyLoss()
+        self.runtime_criterion = nn.HuberLoss(delta=1.0)  # More robust than MSE
     
     def train_epoch(self, loader: PyGDataLoader) -> Dict[str, float]:
-        """Train for one epoch."""
+        """Train for one epoch with optional augmentation."""
         self.model.train()
         total_loss = 0.0
         total_thresh_loss = 0.0
@@ -69,6 +83,10 @@ class GNNTrainer:
         n_batches = 0
         
         for batch in loader:
+            # Apply augmentation if provided
+            if self.augmentation is not None:
+                batch = self.augmentation(batch)
+            
             batch = batch.to(self.device)
             
             self.optimizer.zero_grad()
@@ -128,7 +146,8 @@ class GNNTrainer:
                 global_features=batch.global_features,
             )
             
-            thresh_preds = threshold_logits.argmax(dim=1).cpu()
+            # Use model's prediction method to handle ordinal vs standard
+            thresh_preds = self.model.predict_threshold_class(threshold_logits).cpu()
             runtime_pred = runtime_pred.cpu()
             
             all_thresh_preds.extend(thresh_preds.tolist())
@@ -162,7 +181,8 @@ class GNNTrainer:
                 global_features=batch.global_features,
             )
             
-            thresh_classes = threshold_logits.argmax(dim=1).cpu().numpy()
+            # Use model's prediction method to handle ordinal vs standard
+            thresh_classes = self.model.predict_threshold_class(threshold_logits).cpu().numpy()
             thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
             runtime_values = np.expm1(runtime_pred.cpu().numpy())
             
@@ -178,6 +198,7 @@ class GNNTrainer:
         epochs: int = 100,
         early_stopping_patience: int = 20,
         verbose: bool = False,
+        show_progress: bool = True,
     ) -> Dict[str, Any]:
         """Full training loop with early stopping."""
         history = {
@@ -190,7 +211,11 @@ class GNNTrainer:
         patience_counter = 0
         best_state = None
         
-        for epoch in range(epochs):
+        epoch_iter = range(epochs)
+        if show_progress:
+            epoch_iter = tqdm(epoch_iter, desc="Training", leave=False)
+        
+        for epoch in epoch_iter:
             train_metrics = self.train_epoch(train_loader)
             val_metrics = self.evaluate(val_loader)
             
@@ -210,7 +235,13 @@ class GNNTrainer:
             else:
                 patience_counter += 1
             
-            if verbose and (epoch + 1) % 10 == 0:
+            if show_progress:
+                epoch_iter.set_postfix({
+                    "loss": f"{train_metrics['loss']:.3f}",
+                    "val_acc": f"{val_metrics['threshold_accuracy']:.3f}",
+                    "val_mse": f"{val_metrics['runtime_mse']:.3f}",
+                })
+            elif verbose and (epoch + 1) % 10 == 0:
                 print(
                     f"Epoch {epoch+1}/{epochs} | "
                     f"Train Loss: {train_metrics['loss']:.4f} | "
@@ -219,7 +250,9 @@ class GNNTrainer:
                 )
             
             if patience_counter >= early_stopping_patience:
-                if verbose:
+                if show_progress:
+                    epoch_iter.close()
+                elif verbose:
                     print(f"Early stopping at epoch {epoch+1}")
                 break
         
@@ -265,8 +298,18 @@ def run_single_evaluation(
     early_stopping_patience: int = 20,
     device: str = "cpu",
     verbose: bool = False,
+    use_ordinal: bool = True,
+    use_augmentation: bool = True,
+    augmentation_strength: float = 0.5,
 ) -> Dict[str, Any]:
-    """Train and evaluate a single GNN model."""
+    """
+    Train and evaluate a single GNN model.
+    
+    Args:
+        use_ordinal: Use ordinal regression for threshold prediction
+        use_augmentation: Apply data augmentation during training
+        augmentation_strength: Controls augmentation intensity (0.0 to 1.0)
+    """
     model = create_gnn_model(
         model_type=model_type,
         node_feat_dim=NODE_FEAT_DIM,
@@ -275,13 +318,26 @@ def run_single_evaluation(
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         dropout=dropout,
+        use_ordinal=use_ordinal,
     )
+    
+    # Create augmentation if enabled
+    augmentation = None
+    if use_augmentation:
+        augmentation = get_train_augmentation(
+            qubit_perm_p=augmentation_strength,
+            edge_dropout_p=0.1 * augmentation_strength,
+            feature_noise_std=0.1 * augmentation_strength,
+            temporal_jitter_std=0.05 * augmentation_strength,
+        )
     
     trainer = GNNTrainer(
         model=model,
         device=device,
         lr=lr,
         weight_decay=weight_decay,
+        use_ordinal=use_ordinal,
+        augmentation=augmentation,
     )
     
     start_time = time.time()
@@ -294,7 +350,7 @@ def run_single_evaluation(
     )
     train_time = time.time() - start_time
     
-    # Evaluate
+    # Evaluate (no augmentation during evaluation)
     train_metrics = trainer.evaluate(train_loader)
     val_metrics = trainer.evaluate(val_loader)
     
@@ -425,25 +481,38 @@ def print_report(results: Dict[str, Any]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train and evaluate Quantum Circuit GNN"
+        description="Train and evaluate Quantum Circuit GNN with improvements"
     )
+    # Model architecture
     parser.add_argument("--model-type", type=str, default="basic",
                         choices=["basic", "attention"],
                         help="GNN model type (default: basic)")
-    parser.add_argument("--hidden-dim", type=int, default=64,
-                        help="Hidden dimension (default: 64)")
-    parser.add_argument("--num-layers", type=int, default=4,
-                        help="Number of message passing layers (default: 4)")
-    parser.add_argument("--dropout", type=float, default=0.1,
-                        help="Dropout rate (default: 0.1)")
+    parser.add_argument("--hidden-dim", type=int, default=48,
+                        help="Hidden dimension (default: 48, reduced for regularization)")
+    parser.add_argument("--num-layers", type=int, default=3,
+                        help="Number of message passing layers (default: 3)")
+    parser.add_argument("--dropout", type=float, default=0.25,
+                        help="Dropout rate (default: 0.25, increased for regularization)")
+    
+    # Training
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate (default: 1e-3)")
-    parser.add_argument("--weight-decay", type=float, default=1e-4,
-                        help="Weight decay (default: 1e-4)")
+    parser.add_argument("--weight-decay", type=float, default=1e-3,
+                        help="Weight decay (default: 1e-3, increased for regularization)")
     parser.add_argument("--epochs", type=int, default=100,
                         help="Maximum training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=32,
-                        help="Batch size (default: 32)")
+    parser.add_argument("--batch-size", type=int, default=16,
+                        help="Batch size (default: 16)")
+    
+    # Improvements
+    parser.add_argument("--no-ordinal", action="store_true",
+                        help="Disable ordinal regression (use standard classification)")
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Disable data augmentation")
+    parser.add_argument("--aug-strength", type=float, default=0.5,
+                        help="Augmentation strength 0-1 (default: 0.5)")
+    
+    # Evaluation
     parser.add_argument("--n-runs", type=int, default=10,
                         help="Number of runs (default: 10)")
     parser.add_argument("--val-fraction", type=float, default=0.2,
@@ -466,8 +535,11 @@ def main():
         print(f"Error: Data file not found at {data_path}")
         sys.exit(1)
     
+    use_ordinal = not args.no_ordinal
+    use_augmentation = not args.no_augmentation
+    
     print("=" * 60)
-    print("QUANTUM CIRCUIT GNN EVALUATION")
+    print("QUANTUM CIRCUIT GNN EVALUATION (IMPROVED)")
     print("=" * 60)
     print(f"\nConfiguration:")
     print(f"  Model type: {args.model_type}")
@@ -478,6 +550,10 @@ def main():
     print(f"  Weight decay: {args.weight_decay}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
+    print(f"  Ordinal regression: {use_ordinal}")
+    print(f"  Data augmentation: {use_augmentation}")
+    if use_augmentation:
+        print(f"  Augmentation strength: {args.aug_strength}")
     print(f"  Number of runs: {args.n_runs}")
     print(f"  Device: {args.device}")
     
@@ -500,7 +576,8 @@ def main():
         all_results = []
         for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders):
             print(f"\nFold {fold_idx + 1}/{args.kfold}")
-            for run_idx in tqdm(range(n_runs_per_fold), desc=f"Fold {fold_idx+1}"):
+            for run_idx in range(n_runs_per_fold):
+                print(f"  Run {run_idx + 1}/{n_runs_per_fold}")
                 seed = args.seed + fold_idx * 1000 + run_idx
                 set_all_seeds(seed)
                 
@@ -516,6 +593,9 @@ def main():
                     epochs=args.epochs,
                     device=args.device,
                     verbose=args.verbose,
+                    use_ordinal=use_ordinal,
+                    use_augmentation=use_augmentation,
+                    augmentation_strength=args.aug_strength,
                 )
                 all_results.append(result)
         
@@ -545,7 +625,8 @@ def main():
         print(f"  Val samples: {len(val_loader.dataset)}")
         
         all_results = []
-        for i in tqdm(range(args.n_runs), desc="Training GNN models"):
+        for i in range(args.n_runs):
+            print(f"\nRun {i + 1}/{args.n_runs}")
             seed = args.seed + i
             set_all_seeds(seed)
             
@@ -561,6 +642,9 @@ def main():
                 epochs=args.epochs,
                 device=args.device,
                 verbose=args.verbose,
+                use_ordinal=use_ordinal,
+                use_augmentation=use_augmentation,
+                augmentation_strength=args.aug_strength,
             )
             all_results.append(result)
         
