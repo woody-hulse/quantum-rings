@@ -53,6 +53,128 @@ class ResultEntry:
     forward_shots: Optional[int] = None
 
 
+def _compute_graph_features(qubit_pairs: set, n_qubits: int) -> Dict[str, float]:
+    """Compute interaction graph features from 2-qubit gate pairs."""
+    if not qubit_pairs or n_qubits == 0:
+        return {
+            "max_degree": 0,
+            "avg_degree": 0.0,
+            "degree_entropy": 0.0,
+            "n_connected_components": 0,
+            "clustering_coeff": 0.0,
+        }
+    
+    degree = [0] * n_qubits
+    adjacency = {i: set() for i in range(n_qubits)}
+    
+    for q1, q2 in qubit_pairs:
+        if q1 < n_qubits and q2 < n_qubits:
+            degree[q1] += 1
+            degree[q2] += 1
+            adjacency[q1].add(q2)
+            adjacency[q2].add(q1)
+    
+    max_degree = max(degree)
+    avg_degree = np.mean(degree)
+    
+    degree_counts = np.array(degree, dtype=float)
+    degree_counts = degree_counts[degree_counts > 0]
+    if len(degree_counts) > 0:
+        probs = degree_counts / degree_counts.sum()
+        degree_entropy = -np.sum(probs * np.log2(probs + 1e-10))
+    else:
+        degree_entropy = 0.0
+    
+    visited = set()
+    n_components = 0
+    for start in range(n_qubits):
+        if start in visited or not adjacency[start]:
+            continue
+        n_components += 1
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.extend(adjacency[node] - visited)
+    
+    triangles = 0
+    triplets = 0
+    for node in range(n_qubits):
+        neighbors = list(adjacency[node])
+        k = len(neighbors)
+        if k >= 2:
+            triplets += k * (k - 1) // 2
+            for i in range(len(neighbors)):
+                for j in range(i + 1, len(neighbors)):
+                    if neighbors[j] in adjacency[neighbors[i]]:
+                        triangles += 1
+    clustering_coeff = triangles / triplets if triplets > 0 else 0.0
+    
+    return {
+        "max_degree": max_degree,
+        "avg_degree": avg_degree,
+        "degree_entropy": degree_entropy,
+        "n_connected_components": n_components,
+        "clustering_coeff": clustering_coeff,
+    }
+
+
+def _estimate_depth(text: str, n_qubits: int) -> Dict[str, float]:
+    """Estimate circuit depth using a simple layer heuristic."""
+    if n_qubits == 0:
+        return {"estimated_depth": 0, "depth_per_qubit": 0.0}
+    
+    qubit_depth = [0] * n_qubits
+    
+    gate_pattern = re.compile(
+        r"\b(cx|cz|swap|ccx|h|x|y|z|s|sdg|t|tdg|rx|ry|rz|u1|u2|u3)\b[^;]*;"
+    )
+    qubit_ref = re.compile(r"\w+\[(\d+)\]")
+    
+    for match in gate_pattern.finditer(text):
+        gate_text = match.group(0)
+        qubits = [int(m.group(1)) for m in qubit_ref.finditer(gate_text)]
+        qubits = [q for q in qubits if q < n_qubits]
+        if qubits:
+            max_layer = max(qubit_depth[q] for q in qubits)
+            for q in qubits:
+                qubit_depth[q] = max_layer + 1
+    
+    estimated_depth = max(qubit_depth) if qubit_depth else 0
+    depth_per_qubit = estimated_depth / n_qubits if n_qubits > 0 else 0.0
+    
+    return {"estimated_depth": estimated_depth, "depth_per_qubit": depth_per_qubit}
+
+
+def _compute_cut_features(qubit_pairs: set, all_2q_ops: list, n_qubits: int) -> Dict[str, float]:
+    """Compute entanglement cut pressure features."""
+    if n_qubits < 2 or not all_2q_ops:
+        return {
+            "middle_cut_crossings": 0,
+            "cut_crossing_ratio": 0.0,
+            "max_cut_crossings": 0,
+        }
+    
+    middle = n_qubits // 2
+    middle_crossings = sum(1 for q1, q2 in all_2q_ops if (q1 < middle) != (q2 < middle))
+    
+    cut_counts = []
+    for cut_pos in range(1, n_qubits):
+        crossings = sum(1 for q1, q2 in all_2q_ops if (q1 < cut_pos) != (q2 < cut_pos))
+        cut_counts.append(crossings)
+    
+    max_cut = max(cut_counts) if cut_counts else 0
+    total_ops = len(all_2q_ops)
+    
+    return {
+        "middle_cut_crossings": middle_crossings,
+        "cut_crossing_ratio": middle_crossings / total_ops if total_ops > 0 else 0.0,
+        "max_cut_crossings": max_cut,
+    }
+
+
 def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
     """Extract features from a QASM file for model input."""
     if not qasm_path.exists():
@@ -92,12 +214,19 @@ def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
     n_custom_gates = len(re.findall(r"\bgate\s+\w+", text))
     
     qubit_pairs = set()
+    all_2q_ops = []
     for match in re.finditer(r"\bcx\s+(\w+)\[(\d+)\]\s*,\s*(\w+)\[(\d+)\]", text):
         q1, q2 = int(match.group(2)), int(match.group(4))
         qubit_pairs.add((min(q1, q2), max(q1, q2)))
+        all_2q_ops.append((q1, q2))
     for match in re.finditer(r"\bcz\s+(\w+)\[(\d+)\]\s*,\s*(\w+)\[(\d+)\]", text):
         q1, q2 = int(match.group(2)), int(match.group(4))
         qubit_pairs.add((min(q1, q2), max(q1, q2)))
+        all_2q_ops.append((q1, q2))
+    for match in re.finditer(r"\bswap\s+(\w+)\[(\d+)\]\s*,\s*(\w+)\[(\d+)\]", text):
+        q1, q2 = int(match.group(2)), int(match.group(4))
+        qubit_pairs.add((min(q1, q2), max(q1, q2)))
+        all_2q_ops.append((q1, q2))
     
     n_unique_pairs = len(qubit_pairs)
     
@@ -105,11 +234,19 @@ def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
         spans = [abs(q2 - q1) for q1, q2 in qubit_pairs]
         avg_span = np.mean(spans)
         max_span = max(spans)
+        min_span = min(spans)
+        span_std = np.std(spans) if len(spans) > 1 else 0.0
     else:
         avg_span = 0.0
         max_span = 0
+        min_span = 0
+        span_std = 0.0
     
     gate_density = n_2q_gates / max(n_qubits, 1)
+    
+    graph_features = _compute_graph_features(qubit_pairs, n_qubits)
+    depth_features = _estimate_depth(text, n_qubits)
+    cut_features = _compute_cut_features(qubit_pairs, all_2q_ops, n_qubits)
     
     return {
         "n_lines": non_empty_lines,
@@ -126,11 +263,16 @@ def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
         "n_unique_pairs": n_unique_pairs,
         "avg_span": avg_span,
         "max_span": max_span,
+        "min_span": min_span,
+        "span_std": span_std,
         "gate_density": gate_density,
         "n_h": n_h,
         "n_rx": n_rx,
         "n_ry": n_ry,
         "n_rz": n_rz,
+        **graph_features,
+        **depth_features,
+        **cut_features,
     }
 
 
@@ -266,6 +408,18 @@ class QuantumCircuitDataset(Dataset):
                     return i
             return len(THRESHOLD_LADDER) - 1
     
+    NUMERIC_FEATURE_KEYS = [
+        "n_qubits", "n_lines", "n_cx", "n_cz", "n_swap", "n_ccx",
+        "n_2q_gates", "n_1q_gates", "n_unique_pairs",
+        "avg_span", "max_span", "min_span", "span_std",
+        "gate_density", "n_custom_gates", "n_measure", "n_barrier",
+        "n_h", "n_rx", "n_ry", "n_rz",
+        "max_degree", "avg_degree", "degree_entropy",
+        "n_connected_components", "clustering_coeff",
+        "estimated_depth", "depth_per_qubit",
+        "middle_cut_crossings", "cut_crossing_ratio", "max_cut_crossings",
+    ]
+    
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         result = self.results[idx]
         circuit = self.circuit_info.get(result.file)
@@ -278,21 +432,9 @@ class QuantumCircuitDataset(Dataset):
         backend_idx = BACKEND_MAP.get(result.backend, 0)
         precision_idx = PRECISION_MAP.get(result.precision, 0)
         
-        numeric_features = torch.tensor([
-            qasm_features.get("n_qubits", 0),
-            qasm_features.get("n_lines", 0),
-            qasm_features.get("n_cx", 0),
-            qasm_features.get("n_cz", 0),
-            qasm_features.get("n_2q_gates", 0),
-            qasm_features.get("n_1q_gates", 0),
-            qasm_features.get("n_unique_pairs", 0),
-            qasm_features.get("avg_span", 0.0),
-            qasm_features.get("max_span", 0),
-            qasm_features.get("gate_density", 0.0),
-            qasm_features.get("n_custom_gates", 0),
-            backend_idx,
-            precision_idx,
-        ], dtype=torch.float32)
+        numeric_values = [qasm_features.get(k, 0.0) for k in self.NUMERIC_FEATURE_KEYS]
+        numeric_values.extend([backend_idx, precision_idx])
+        numeric_features = torch.tensor(numeric_values, dtype=torch.float32)
         
         features = torch.cat([numeric_features, family_onehot])
         
@@ -312,7 +454,7 @@ class QuantumCircuitDataset(Dataset):
     
     @property
     def feature_dim(self) -> int:
-        return 13 + len(self.FAMILY_CATEGORIES)
+        return len(self.NUMERIC_FEATURE_KEYS) + 2 + len(self.FAMILY_CATEGORIES)
     
     @property
     def num_threshold_classes(self) -> int:
