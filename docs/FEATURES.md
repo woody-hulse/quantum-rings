@@ -57,7 +57,7 @@ Built from the qubit interaction graph where nodes = qubits, edges = 2Q gate pai
 |---------|-------------|
 | `max_degree` | Maximum number of unique qubits any single qubit interacts with |
 | `avg_degree` | Average degree across all qubits |
-| `degree_entropy` | Entropy of degree distribution (high = uniform connectivity) |
+| `degree_entropy` | Normalized entropy of degree distribution (high = uniform connectivity) |
 | `n_connected_components` | Number of disconnected subgraphs (usually 1 for useful circuits) |
 | `clustering_coeff` | Graph clustering coefficient — how often qubit neighbors also neighbor each other |
 

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOLD_LADDER
+from data_loader_og import create_data_loaders, create_kfold_data_loaders, THRESHOLD_LADDER
 from models.base import BaseModel
 from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
