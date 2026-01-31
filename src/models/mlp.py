@@ -1,5 +1,7 @@
 """
 MLP model implementation for threshold classification and runtime regression.
+
+Supports both standard losses (CrossEntropy + MSE) and challenge-aligned losses.
 """
 
 from typing import Dict, List, Tuple, Any, Optional
@@ -17,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loader import THRESHOLD_LADDER, get_feature_statistics
 from models.base import BaseModel
+from losses import ChallengeScoringLoss, compute_scoring_metrics
 
 
 class MLPNetwork(nn.Module):
@@ -68,7 +71,24 @@ class MLPModel(BaseModel):
         early_stopping_patience: int = 20,
         threshold_weight: float = 1.0,
         runtime_weight: float = 1.0,
+        use_scoring_loss: bool = False,
+        underprediction_penalty: float = 10.0,
     ):
+        """
+        Args:
+            input_dim: Input feature dimension
+            hidden_dims: Hidden layer dimensions
+            dropout: Dropout rate
+            lr: Learning rate
+            weight_decay: L2 regularization weight
+            device: Device to train on
+            epochs: Maximum training epochs
+            early_stopping_patience: Patience for early stopping
+            threshold_weight: Weight for threshold loss
+            runtime_weight: Weight for runtime loss
+            use_scoring_loss: If True, use challenge-aligned scoring loss
+            underprediction_penalty: Penalty for threshold underprediction (only with scoring loss)
+        """
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         self.dropout = dropout
@@ -79,6 +99,7 @@ class MLPModel(BaseModel):
         self.early_stopping_patience = early_stopping_patience
         self.threshold_weight = threshold_weight
         self.runtime_weight = runtime_weight
+        self.use_scoring_loss = use_scoring_loss
         
         self.network = MLPNetwork(
             input_dim=input_dim,
@@ -93,8 +114,17 @@ class MLPModel(BaseModel):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=10
         )
-        self.threshold_criterion = nn.CrossEntropyLoss()
-        self.runtime_criterion = nn.MSELoss()
+        
+        if use_scoring_loss:
+            self.criterion = ChallengeScoringLoss(
+                threshold_weight=threshold_weight,
+                runtime_weight=runtime_weight,
+                underprediction_penalty=underprediction_penalty,
+                multiplicative=False,
+            ).to(device)
+        else:
+            self.threshold_criterion = nn.CrossEntropyLoss()
+            self.runtime_criterion = nn.MSELoss()
         
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
@@ -129,10 +159,19 @@ class MLPModel(BaseModel):
             self.optimizer.zero_grad()
             threshold_logits, runtime_pred = self.network(features)
             
-            thresh_loss = self.threshold_criterion(threshold_logits, threshold_labels)
-            runtime_loss = self.runtime_criterion(runtime_pred, runtime_labels)
+            if self.use_scoring_loss:
+                loss_dict = self.criterion(
+                    threshold_logits, runtime_pred,
+                    threshold_labels, runtime_labels
+                )
+                loss = loss_dict["loss"]
+                thresh_loss = loss_dict["threshold_loss"]
+                runtime_loss = loss_dict["runtime_loss"]
+            else:
+                thresh_loss = self.threshold_criterion(threshold_logits, threshold_labels)
+                runtime_loss = self.runtime_criterion(runtime_pred, runtime_labels)
+                loss = self.threshold_weight * thresh_loss + self.runtime_weight * runtime_loss
             
-            loss = self.threshold_weight * thresh_loss + self.runtime_weight * runtime_loss
             loss.backward()
             self.optimizer.step()
             
