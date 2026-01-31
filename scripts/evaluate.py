@@ -128,7 +128,6 @@ def create_model(
             epochs=kwargs.get("epochs", 100),
             early_stopping_patience=kwargs.get("early_stopping_patience", 20),
             use_scoring_loss=kwargs.get("use_scoring_loss", False),
-            underprediction_penalty=kwargs.get("underprediction_penalty", 10.0),
         )
     elif model_class == XGBoostModel:
         return XGBoostModel(
@@ -471,9 +470,7 @@ def main():
     parser.add_argument("--kfold", type=int, default=0,
                         help="Number of folds for cross-validation (0=disabled, default: 0)")
     parser.add_argument("--scoring-loss", action="store_true",
-                        help="Use challenge-aligned scoring loss instead of standard losses")
-    parser.add_argument("--underprediction-penalty", type=float, default=10.0,
-                        help="Penalty for threshold underprediction (only with --scoring-loss)")
+                        help="Use challenge-aligned scoring loss (multiplicative) instead of standard losses") # bad
     args = parser.parse_args()
     
     project_root = Path(__file__).parent.parent
@@ -504,8 +501,7 @@ def main():
     print(f"  Base seed: {args.seed}")
     print(f"  Device: {args.device}")
     if args.scoring_loss:
-        print(f"  Loss: Challenge-aligned scoring loss")
-        print(f"  Underprediction penalty: {args.underprediction_penalty}")
+        print(f"  Loss: Challenge-aligned scoring loss (multiplicative)")
     else:
         print(f"  Loss: Standard (CrossEntropy + MSE)")
     
@@ -534,7 +530,6 @@ def main():
         "device": args.device,
         "epochs": args.epochs,
         "use_scoring_loss": args.scoring_loss,
-        "underprediction_penalty": args.underprediction_penalty,
     }
     
     if use_kfold:

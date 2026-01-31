@@ -28,9 +28,9 @@ class MLPNetwork(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: List[int] = [128, 64, 32],
+        hidden_dims: List[int] = [64, 32],
         num_threshold_classes: int = 9,
-        dropout: float = 0.2,
+        dropout: float = 0.1,
     ):
         super().__init__()
         
@@ -65,14 +65,13 @@ class MLPModel(BaseModel):
         hidden_dims: List[int] = [128, 64, 32],
         dropout: float = 0.2,
         lr: float = 1e-3,
-        weight_decay: float = 1e-4,
+        weight_decay: float = 0,
         device: str = "cpu",
         epochs: int = 100,
         early_stopping_patience: int = 20,
         threshold_weight: float = 1.0,
         runtime_weight: float = 1.0,
         use_scoring_loss: bool = False,
-        underprediction_penalty: float = 10.0,
     ):
         """
         Args:
@@ -84,10 +83,9 @@ class MLPModel(BaseModel):
             device: Device to train on
             epochs: Maximum training epochs
             early_stopping_patience: Patience for early stopping
-            threshold_weight: Weight for threshold loss
-            runtime_weight: Weight for runtime loss
-            use_scoring_loss: If True, use challenge-aligned scoring loss
-            underprediction_penalty: Penalty for threshold underprediction (only with scoring loss)
+            threshold_weight: Weight for threshold loss (used in additive mode)
+            runtime_weight: Weight for runtime loss (used in additive mode)
+            use_scoring_loss: If True, use challenge-aligned scoring loss (multiplicative)
         """
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -119,8 +117,7 @@ class MLPModel(BaseModel):
             self.criterion = ChallengeScoringLoss(
                 threshold_weight=threshold_weight,
                 runtime_weight=runtime_weight,
-                underprediction_penalty=underprediction_penalty,
-                multiplicative=False,
+                multiplicative=True,
             ).to(device)
         else:
             self.threshold_criterion = nn.CrossEntropyLoss()
