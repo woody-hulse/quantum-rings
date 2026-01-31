@@ -22,12 +22,16 @@ from data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOL
 from models.base import BaseModel
 from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
+from models.catboost_model import CatBoostModel
+from models.lightgbm_model import LightGBMModel
 from scoring import compute_challenge_score
 
 
 AVAILABLE_MODELS = {
     "mlp": MLPModel,
     "xgboost": XGBoostModel,
+    "catboost": CatBoostModel,
+    "lightgbm": LightGBMModel,
 }
 
 
@@ -137,6 +141,26 @@ def create_model(
             subsample=kwargs.get("subsample", 0.8),
             colsample_bytree=kwargs.get("colsample_bytree", 0.8),
             random_state=seed,
+        )
+    elif model_class == CatBoostModel:
+        return CatBoostModel(
+            depth=kwargs.get("depth", 6),
+            learning_rate=kwargs.get("learning_rate", 0.1),
+            iterations=kwargs.get("iterations", 100),
+            l2_leaf_reg=kwargs.get("l2_leaf_reg", 3.0),
+            random_state=seed,
+            verbose=False,
+        )
+    elif model_class == LightGBMModel:
+        return LightGBMModel(
+            max_depth=kwargs.get("max_depth", 6),
+            learning_rate=kwargs.get("learning_rate", 0.1),
+            n_estimators=kwargs.get("n_estimators", 100),
+            num_leaves=kwargs.get("num_leaves", 31),
+            subsample=kwargs.get("subsample", 0.8),
+            colsample_bytree=kwargs.get("colsample_bytree", 0.8),
+            random_state=seed,
+            verbose=-1,
         )
     else:
         raise ValueError(f"Unknown model class: {model_class}")
