@@ -8,7 +8,14 @@ Generates plots to help understand patterns in threshold selection and runtime.
 import sys
 from pathlib import Path
 from collections import defaultdict
+# Print current directory to debug
 
+
+# Try adding current directory
+sys.path.insert(0, '.')
+
+# If data_loader.py is in a 'src' subfolder:
+sys.path.insert(0, './src')
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
@@ -27,7 +34,13 @@ from data_loader import (
 
 def setup_style():
     """Configure matplotlib style."""
-    plt.style.use('seaborn-v0_8-whitegrid')
+    try:
+        plt.style.use('seaborn-v0_8-whitegrid')
+    except OSError:
+        try:
+            plt.style.use('seaborn-v0_8')
+        except OSError:
+            plt.style.use('default')
     plt.rcParams['figure.figsize'] = (12, 8)
     plt.rcParams['font.size'] = 10
     plt.rcParams['axes.titlesize'] = 12
