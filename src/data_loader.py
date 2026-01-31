@@ -1007,7 +1007,6 @@ def create_data_loaders(
         num_workers=num_workers,
         collate_fn=collate_fn,
         generator=train_generator,
-        drop_last=True,  # Avoid batch size 1 which breaks BatchNorm
     )
     
     val_loader = DataLoader(
@@ -1204,7 +1203,6 @@ def create_kfold_data_loaders(
             num_workers=num_workers,
             collate_fn=collate_fn,
             generator=train_generator,
-            drop_last=True,  # Avoid batch size 1 which breaks BatchNorm
         )
         
         val_loader = DataLoader(
