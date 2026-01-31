@@ -24,6 +24,7 @@ from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
 from models.catboost_model import CatBoostModel
 from models.lightgbm_model import LightGBMModel
+from models.ensemble_model import EnsembleModel
 from scoring import compute_challenge_score
 
 
@@ -32,6 +33,7 @@ AVAILABLE_MODELS = {
     "xgboost": XGBoostModel,
     "catboost": CatBoostModel,
     "lightgbm": LightGBMModel,
+    "ensemble": None,  # Special handling required
 }
 
 
@@ -469,6 +471,87 @@ def print_model_report(results: Dict[str, Any]) -> None:
             print(f"  {i+1:2d}. Feature {idx:3d}: {importance['runtime'][idx]:.4f}")
 
 
+def evaluate_ensemble(
+    model_names: List[str],
+    data_path: Path,
+    circuits_dir: Path,
+    input_dim: int,
+    n_runs: int = 5,
+    base_seed: int = 42,
+    batch_size: int = 32,
+    val_fraction: float = 0.2,
+    ensemble_strategy: str = "average",
+    **model_kwargs,
+) -> Dict[str, Any]:
+    """Evaluate an ensemble of multiple models.
+
+    Args:
+        model_names: List of model names to ensemble (e.g., ["mlp", "catboost"])
+        data_path: Path to data JSON
+        circuits_dir: Path to circuits directory
+        input_dim: Feature dimension
+        n_runs: Number of ensemble evaluations (default: 5)
+        base_seed: Base random seed
+        batch_size: Batch size
+        val_fraction: Validation fraction
+        ensemble_strategy: "average", "weighted_average", or "vote"
+        **model_kwargs: Additional model parameters
+
+    Returns:
+        Dictionary with evaluation results
+    """
+    print("\n" + "="*60)
+    print(f"ENSEMBLE MODEL EVALUATION")
+    print("="*60)
+    print(f"Base models: {', '.join(model_names)}")
+    print(f"Strategy: {ensemble_strategy}")
+    print(f"\nTraining {n_runs} ensembles...")
+
+    all_results = []
+
+    for i in tqdm(range(n_runs), desc="Training ensembles"):
+        seed = base_seed + i
+        set_all_seeds(seed)
+
+        # Create data loaders
+        train_loader, val_loader = create_data_loaders(
+            data_path=data_path,
+            circuits_dir=circuits_dir,
+            batch_size=batch_size,
+            val_fraction=val_fraction,
+            seed=base_seed,
+        )
+
+        # Train all base models
+        base_models = []
+        for model_idx, model_name in enumerate(model_names):
+            model_class = AVAILABLE_MODELS[model_name]
+            # Use model_idx to create unique seeds for each model
+            model_seed = seed + model_idx * 10000
+            model = create_model(model_class, input_dim, model_seed, **model_kwargs)
+            model.fit(train_loader, val_loader, verbose=False)
+            base_models.append(model)
+
+        # Create ensemble
+        ensemble = EnsembleModel(
+            models=base_models,
+            strategy=ensemble_strategy,
+        )
+
+        # Evaluate
+        result = run_single_evaluation(ensemble, train_loader, val_loader)
+        all_results.append(result)
+
+    aggregated = aggregate_metrics(all_results)
+
+    return {
+        "model": f"Ensemble({'+'.join(model_names)})",
+        "n_runs": n_runs,
+        "aggregated_metrics": aggregated,
+        "all_results": all_results,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate models with multiple random initializations and optional k-fold CV"
@@ -478,20 +561,25 @@ def main():
         choices=list(AVAILABLE_MODELS.keys()),
         help="Which model to evaluate"
     )
-    parser.add_argument("--n-runs", type=int, default=100, 
+    parser.add_argument("--n-runs", type=int, default=100,
                         help="Number of models to train per fold (default: 100, or 20 if using k-fold)")
-    parser.add_argument("--epochs", type=int, default=100, 
+    parser.add_argument("--epochs", type=int, default=100,
                         help="MLP training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=32, 
+    parser.add_argument("--batch-size", type=int, default=32,
                         help="Batch size (default: 32)")
-    parser.add_argument("--val-fraction", type=float, default=0.2, 
+    parser.add_argument("--val-fraction", type=float, default=0.2,
                         help="Validation fraction for single split (default: 0.2)")
-    parser.add_argument("--seed", type=int, default=42, 
+    parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default: 42)")
-    parser.add_argument("--device", type=str, default="cpu", 
+    parser.add_argument("--device", type=str, default="cpu",
                         help="Device for MLP (cpu/cuda/mps)")
     parser.add_argument("--kfold", type=int, default=0,
                         help="Number of folds for cross-validation (0=disabled, default: 0)")
+    parser.add_argument("--ensemble-models", type=str, default=None,
+                        help="Comma-separated list of models to ensemble (e.g., 'mlp,catboost')")
+    parser.add_argument("--ensemble-strategy", type=str, default="average",
+                        choices=["average", "weighted_average", "vote"],
+                        help="Ensemble strategy (default: average)")
     args = parser.parse_args()
     
     project_root = Path(__file__).parent.parent
@@ -540,14 +628,64 @@ def main():
     
     print(f"\nDataset info:")
     print(f"  Feature dimension: {input_dim}")
-    
+
+    # Handle ensemble mode
+    if args.model == "ensemble":
+        if not args.ensemble_models:
+            print("Error: --ensemble-models required when using --model ensemble")
+            print("Example: --model ensemble --ensemble-models mlp,catboost")
+            sys.exit(1)
+
+        model_names = [m.strip() for m in args.ensemble_models.split(",")]
+        for model_name in model_names:
+            if model_name not in AVAILABLE_MODELS or model_name == "ensemble":
+                print(f"Error: Invalid model name '{model_name}' in ensemble")
+                print(f"Available models: {[k for k in AVAILABLE_MODELS.keys() if k != 'ensemble']}")
+                sys.exit(1)
+
+        if use_kfold:
+            print("Error: k-fold CV not supported for ensemble mode yet")
+            sys.exit(1)
+
+        # Show dataset split info
+        train_loader, val_loader = create_data_loaders(
+            data_path=data_path,
+            circuits_dir=circuits_dir,
+            batch_size=args.batch_size,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+        )
+        print(f"  Train samples: {len(train_loader.dataset)}")
+        print(f"  Val samples: {len(val_loader.dataset)}")
+
+        results = evaluate_ensemble(
+            model_names=model_names,
+            data_path=data_path,
+            circuits_dir=circuits_dir,
+            input_dim=input_dim,
+            n_runs=min(args.n_runs, 10),  # Cap at 10 for ensembles (slower)
+            base_seed=args.seed,
+            batch_size=args.batch_size,
+            val_fraction=args.val_fraction,
+            ensemble_strategy=args.ensemble_strategy,
+            device=args.device,
+            epochs=args.epochs,
+        )
+
+        print_model_report(results)
+
+        print("\n" + "="*60)
+        print("EVALUATION COMPLETE")
+        print("="*60)
+        return
+
     model_class = AVAILABLE_MODELS[args.model]
-    
+
     model_kwargs = {
         "device": args.device,
         "epochs": args.epochs,
     }
-    
+
     if use_kfold:
         n_runs_per_fold = min(args.n_runs, 20) if args.n_runs == 100 else args.n_runs
         results = evaluate_model_kfold(
