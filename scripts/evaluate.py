@@ -14,7 +14,6 @@ from typing import Dict, List, Any, Type, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -22,12 +21,16 @@ from data_loader_og import create_data_loaders, create_kfold_data_loaders, THRES
 from models.base import BaseModel
 from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
+from models.catboost_model import CatBoostModel
+from models.lightgbm_model import LightGBMModel
 from scoring import compute_challenge_score
 
 
 AVAILABLE_MODELS = {
     "mlp": MLPModel,
     "xgboost": XGBoostModel,
+    "catboost": CatBoostModel,
+    "lightgbm": LightGBMModel,
 }
 
 
@@ -127,6 +130,7 @@ def create_model(
             device=kwargs.get("device", "cpu"),
             epochs=kwargs.get("epochs", 100),
             early_stopping_patience=kwargs.get("early_stopping_patience", 20),
+            use_scoring_loss=kwargs.get("use_scoring_loss", False),
         )
     elif model_class == XGBoostModel:
         return XGBoostModel(
@@ -136,6 +140,26 @@ def create_model(
             subsample=kwargs.get("subsample", 0.8),
             colsample_bytree=kwargs.get("colsample_bytree", 0.8),
             random_state=seed,
+        )
+    elif model_class == CatBoostModel:
+        return CatBoostModel(
+            depth=kwargs.get("depth", 6),
+            learning_rate=kwargs.get("learning_rate", 0.1),
+            iterations=kwargs.get("iterations", 100),
+            l2_leaf_reg=kwargs.get("l2_leaf_reg", 3.0),
+            random_state=seed,
+            verbose=False,
+        )
+    elif model_class == LightGBMModel:
+        return LightGBMModel(
+            max_depth=kwargs.get("max_depth", 6),
+            learning_rate=kwargs.get("learning_rate", 0.1),
+            n_estimators=kwargs.get("n_estimators", 100),
+            num_leaves=kwargs.get("num_leaves", 31),
+            subsample=kwargs.get("subsample", 0.8),
+            colsample_bytree=kwargs.get("colsample_bytree", 0.8),
+            random_state=seed,
+            verbose=-1,
         )
     else:
         raise ValueError(f"Unknown model class: {model_class}")
@@ -194,7 +218,7 @@ def evaluate_model(
     input_dim: int,
     n_runs: int = 100,
     base_seed: int = 42,
-    batch_size: int = 32,
+    batch_size: int = 8,
     val_fraction: float = 0.2,
     **model_kwargs,
 ) -> Dict[str, Any]:
@@ -211,18 +235,17 @@ def evaluate_model(
     
     all_results = []
     
-    for i in tqdm(range(n_runs), desc=f"Training {model_name} models"):
+    for i in range(n_runs):
+        print(f"\nRun {i + 1}/{n_runs}")
         seed = base_seed + i
         
-        # Create fresh loaders for each run to ensure reproducibility
-        # Each run uses a different seed for model init, but same seed for data split
         set_all_seeds(seed)
         train_loader, val_loader = create_data_loaders(
             data_path=data_path,
             circuits_dir=circuits_dir,
             batch_size=batch_size,
             val_fraction=val_fraction,
-            seed=base_seed,  # Keep data split consistent across runs
+            seed=base_seed,
         )
         
         model = create_model(model_class, input_dim, seed, **model_kwargs)
@@ -301,8 +324,9 @@ def evaluate_model_kfold(
     for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders):
         fold_run_results = []
         
-        desc = f"Fold {fold_idx+1}/{n_folds}"
-        for run_idx in tqdm(range(n_runs_per_fold), desc=desc):
+        print(f"\nFold {fold_idx + 1}/{n_folds}")
+        for run_idx in range(n_runs_per_fold):
+            print(f"  Run {run_idx + 1}/{n_runs_per_fold}")
             seed = base_seed + fold_idx * 1000 + run_idx
             set_all_seeds(seed)
             
@@ -468,6 +492,8 @@ def main():
                         help="Device for MLP (cpu/cuda/mps)")
     parser.add_argument("--kfold", type=int, default=0,
                         help="Number of folds for cross-validation (0=disabled, default: 0)")
+    parser.add_argument("--scoring-loss", action="store_true",
+                        help="Use challenge-aligned scoring loss (multiplicative) instead of standard losses") # bad
     args = parser.parse_args()
     
     project_root = Path(__file__).parent.parent
@@ -497,6 +523,10 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Base seed: {args.seed}")
     print(f"  Device: {args.device}")
+    if args.scoring_loss:
+        print(f"  Loss: Challenge-aligned scoring loss (multiplicative)")
+    else:
+        print(f"  Loss: Standard (CrossEntropy + MSE)")
     
     # Set global seeds for reproducibility
     set_all_seeds(args.seed)
@@ -522,6 +552,7 @@ def main():
     model_kwargs = {
         "device": args.device,
         "epochs": args.epochs,
+        "use_scoring_loss": args.scoring_loss,
     }
     
     if use_kfold:

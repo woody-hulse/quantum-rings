@@ -18,11 +18,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare all available models (runs evaluate.py for each)"
     )
-    parser.add_argument("--n-runs", type=int, default=20, 
+    parser.add_argument("--n-runs", type=int, default=32, 
                         help="Number of models to train per fold/split (default: 20)")
     parser.add_argument("--epochs", type=int, default=100, 
                         help="MLP training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=32, 
+    parser.add_argument("--batch-size", type=int, default=8, 
                         help="Batch size (default: 32)")
     parser.add_argument("--val-fraction", type=float, default=0.2, 
                         help="Validation fraction for single split (default: 0.2)")
@@ -32,11 +32,13 @@ def main():
                         help="Device for MLP (cpu/cuda/mps)")
     parser.add_argument("--kfold", type=int, default=5,
                         help="Number of folds for cross-validation (0=disabled, default: 5)")
+    parser.add_argument("--scoring-loss", action="store_true",
+                        help="Use challenge-aligned scoring loss for MLP")
     args = parser.parse_args()
     
     evaluate_script = Path(__file__).parent / "evaluate.py"
     
-    models = ["mlp", "xgboost"]
+    models = ["catboost", "mlp", "xgboost"]
     
     print("="*60)
     print("MODEL COMPARISON")
@@ -68,6 +70,9 @@ def main():
             cmd.extend(["--kfold", str(args.kfold)])
         else:
             cmd.extend(["--val-fraction", str(args.val_fraction)])
+        
+        if args.scoring_loss:
+            cmd.append("--scoring-loss")
         
         subprocess.run(cmd)
     

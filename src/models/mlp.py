@@ -1,5 +1,7 @@
 """
 MLP model implementation for threshold classification and runtime regression.
+
+Supports both standard losses (CrossEntropy + MSE) and challenge-aligned losses.
 """
 
 from typing import Dict, List, Tuple, Any, Optional
@@ -11,12 +13,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
+from tqdm import tqdm
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loader import THRESHOLD_LADDER, get_feature_statistics
 from models.base import BaseModel
+from losses import ChallengeScoringLoss, compute_scoring_metrics
 
 
 class MLPNetwork(nn.Module):
@@ -25,9 +29,9 @@ class MLPNetwork(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: List[int] = [128, 64, 32],
+        hidden_dims: List[int] = [64, 32],
         num_threshold_classes: int = 9,
-        dropout: float = 0.2,
+        dropout: float = 0.1,
     ):
         super().__init__()
         
@@ -62,13 +66,28 @@ class MLPModel(BaseModel):
         hidden_dims: List[int] = [128, 64, 32],
         dropout: float = 0.2,
         lr: float = 1e-3,
-        weight_decay: float = 1e-4,
+        weight_decay: float = 0,
         device: str = "cpu",
         epochs: int = 100,
         early_stopping_patience: int = 20,
         threshold_weight: float = 1.0,
         runtime_weight: float = 1.0,
+        use_scoring_loss: bool = False,
     ):
+        """
+        Args:
+            input_dim: Input feature dimension
+            hidden_dims: Hidden layer dimensions
+            dropout: Dropout rate
+            lr: Learning rate
+            weight_decay: L2 regularization weight
+            device: Device to train on
+            epochs: Maximum training epochs
+            early_stopping_patience: Patience for early stopping
+            threshold_weight: Weight for threshold loss (used in additive mode)
+            runtime_weight: Weight for runtime loss (used in additive mode)
+            use_scoring_loss: If True, use challenge-aligned scoring loss (multiplicative)
+        """
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         self.dropout = dropout
@@ -79,6 +98,7 @@ class MLPModel(BaseModel):
         self.early_stopping_patience = early_stopping_patience
         self.threshold_weight = threshold_weight
         self.runtime_weight = runtime_weight
+        self.use_scoring_loss = use_scoring_loss
         
         self.network = MLPNetwork(
             input_dim=input_dim,
@@ -93,8 +113,16 @@ class MLPModel(BaseModel):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=10
         )
-        self.threshold_criterion = nn.CrossEntropyLoss()
-        self.runtime_criterion = nn.MSELoss()
+        
+        if use_scoring_loss:
+            self.criterion = ChallengeScoringLoss(
+                threshold_weight=threshold_weight,
+                runtime_weight=runtime_weight,
+                multiplicative=True,
+            ).to(device)
+        else:
+            self.threshold_criterion = nn.CrossEntropyLoss()
+            self.runtime_criterion = nn.MSELoss()
         
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
@@ -129,10 +157,19 @@ class MLPModel(BaseModel):
             self.optimizer.zero_grad()
             threshold_logits, runtime_pred = self.network(features)
             
-            thresh_loss = self.threshold_criterion(threshold_logits, threshold_labels)
-            runtime_loss = self.runtime_criterion(runtime_pred, runtime_labels)
+            if self.use_scoring_loss:
+                loss_dict = self.criterion(
+                    threshold_logits, runtime_pred,
+                    threshold_labels, runtime_labels
+                )
+                loss = loss_dict["loss"]
+                thresh_loss = loss_dict["threshold_loss"]
+                runtime_loss = loss_dict["runtime_loss"]
+            else:
+                thresh_loss = self.threshold_criterion(threshold_logits, threshold_labels)
+                runtime_loss = self.runtime_criterion(runtime_pred, runtime_labels)
+                loss = self.threshold_weight * thresh_loss + self.runtime_weight * runtime_loss
             
-            loss = self.threshold_weight * thresh_loss + self.runtime_weight * runtime_loss
             loss.backward()
             self.optimizer.step()
             
@@ -152,6 +189,7 @@ class MLPModel(BaseModel):
         train_loader: DataLoader,
         val_loader: DataLoader,
         verbose: bool = False,
+        show_progress: bool = True,
     ) -> Dict[str, Any]:
         mean, std = get_feature_statistics(train_loader)
         self._set_normalization(mean, std)
@@ -161,7 +199,11 @@ class MLPModel(BaseModel):
         patience_counter = 0
         best_state = None
         
-        for epoch in range(self.epochs):
+        epoch_iter = range(self.epochs)
+        if show_progress:
+            epoch_iter = tqdm(epoch_iter, desc="Training", leave=False)
+        
+        for epoch in epoch_iter:
             train_metrics = self._train_epoch(train_loader)
             val_metrics = self.evaluate(val_loader)
             
@@ -179,14 +221,22 @@ class MLPModel(BaseModel):
             else:
                 patience_counter += 1
             
-            if verbose and (epoch + 1) % 10 == 0:
+            if show_progress:
+                epoch_iter.set_postfix({
+                    "loss": f"{train_metrics['loss']:.3f}",
+                    "val_acc": f"{val_metrics['threshold_accuracy']:.3f}",
+                    "val_mse": f"{val_metrics['runtime_mse']:.3f}",
+                })
+            elif verbose and (epoch + 1) % 10 == 0:
                 print(f"Epoch {epoch+1}/{self.epochs} | "
                       f"Train Loss: {train_metrics['loss']:.4f} | "
                       f"Val Thresh Acc: {val_metrics['threshold_accuracy']:.4f} | "
                       f"Val Runtime MSE: {val_metrics['runtime_mse']:.4f}")
             
             if patience_counter >= self.early_stopping_patience:
-                if verbose:
+                if show_progress:
+                    epoch_iter.close()
+                elif verbose:
                     print(f"Early stopping at epoch {epoch+1}")
                 break
         
