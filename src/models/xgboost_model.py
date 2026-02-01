@@ -21,13 +21,27 @@ class XGBoostModel(GradientBoostingRegressionModel):
 
     def __init__(
         self,
-        max_depth: int = 6,
-        learning_rate: float = 0.1,
-        n_estimators: int = 100,
+        max_depth: int = 4,
+        learning_rate: float = 0.05,
+        n_estimators: int = 200,
         subsample: float = 0.8,
-        colsample_bytree: float = 0.8,
+        colsample_bytree: float = 0.6,
+        reg_alpha: float = 0.1,
+        reg_lambda: float = 1.0,
+        min_child_weight: int = 3,
         random_state: int = 42,
     ):
+        """
+        XGBoost for duration prediction with regularization defaults suited
+        for small datasets (< 500 samples).
+        
+        Key regularization parameters:
+        - max_depth: Shallower trees (4 instead of 6) prevent overfitting
+        - colsample_bytree: Use 60% of features per tree for diversity
+        - reg_alpha (L1): Light L1 regularization
+        - reg_lambda (L2): Stronger L2 regularization
+        - min_child_weight: Require more samples per leaf
+        """
         if not HAS_XGBOOST:
             raise ImportError("xgboost is required. Install with: pip install xgboost")
         super().__init__()
@@ -36,6 +50,9 @@ class XGBoostModel(GradientBoostingRegressionModel):
         self.n_estimators = n_estimators
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
+        self.reg_alpha = reg_alpha
+        self.reg_lambda = reg_lambda
+        self.min_child_weight = min_child_weight
         self.random_state = random_state
 
     @property
@@ -50,6 +67,9 @@ class XGBoostModel(GradientBoostingRegressionModel):
             "n_estimators": self.n_estimators,
             "subsample": self.subsample,
             "colsample_bytree": self.colsample_bytree,
+            "reg_alpha": self.reg_alpha,
+            "reg_lambda": self.reg_lambda,
+            "min_child_weight": self.min_child_weight,
             "random_state": self.random_state,
         }
 

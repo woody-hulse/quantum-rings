@@ -1,0 +1,138 @@
+{
+  "threshold": {
+    "Baseline (CE)": {
+      "val_score_mean": 0.5733333333333334,
+      "val_score_std": 0.018856180831641232,
+      "avg_underpred_rate": 0.3066666666666667,
+      "runs": [
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.6,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        }
+      ]
+    },
+    "Improved + Ordinal": {
+      "val_score_mean": 0.6666666666666666,
+      "val_score_std": 0.03771236166328251,
+      "avg_underpred_rate": 0.20000000000000004,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.72,
+          "underpred_rate": 0.2,
+          "accuracy": 0.64
+        }
+      ]
+    },
+    "Improved + Focal": {
+      "val_score_mean": 0.7200000000000001,
+      "val_score_std": 0.0653197264742181,
+      "avg_underpred_rate": 0.25333333333333335,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.72,
+          "underpred_rate": 0.2,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.8,
+          "underpred_rate": 0.2,
+          "accuracy": 0.8
+        }
+      ]
+    },
+    "Improved + Conservative CE": {
+      "val_score_mean": 0.64,
+      "val_score_std": 0.0,
+      "avg_underpred_rate": 0.28,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.28,
+          "accuracy": 0.56
+        },
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        }
+      ]
+    }
+  },
+  "duration": {
+    "Baseline": {
+      "val_mae_mean": 0.696297824382782,
+      "val_mae_std": 0.024044835940003395,
+      "avg_overfit_gap": 0.18994855880737305,
+      "runs": [
+        {
+          "train_mae": 0.5089922547340393,
+          "val_mae": 0.6728694438934326,
+          "overfit_gap": 0.1638771891593933
+        },
+        {
+          "train_mae": 0.48188892006874084,
+          "val_mae": 0.7293559312820435,
+          "overfit_gap": 0.2474670112133026
+        },
+        {
+          "train_mae": 0.5281664133071899,
+          "val_mae": 0.6866679191589355,
+          "overfit_gap": 0.1585015058517456
+        }
+      ]
+    },
+    "Improved (Attention + StochDepth)": {
+      "val_mae_mean": 0.6767401695251465,
+      "val_mae_std": 0.014326615259051323,
+      "avg_overfit_gap": 0.0012521346798166633,
+      "runs": [
+        {
+          "train_mae": 0.5335779786109924,
+          "val_mae": 0.6608137488365173,
+          "overfit_gap": 0.1272357702255249
+        },
+        {
+          "train_mae": 0.8406665921211243,
+          "val_mae": 0.6955495476722717,
+          "overfit_gap": -0.14511704444885254
+        },
+        {
+          "train_mae": 0.6522194147109985,
+          "val_mae": 0.6738570928573608,
+          "overfit_gap": 0.021637678146362305
+        }
+      ]
+    }
+  }
+}

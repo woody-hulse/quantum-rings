@@ -2,14 +2,25 @@
 Graph Neural Network for quantum circuit duration prediction.
 
 Threshold as input (in global features), output log2(duration).
+
+This module provides message-passing GNN models that learn from the topology
+of quantum circuits, where qubits are nodes and gates are edges. Each gate
+type has its own learned embedding, allowing the model to capture how different
+gates affect simulation complexity differently.
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 import torch
 import torch.nn as nn
 from torch_geometric.nn import MessagePassing, global_mean_pool, global_max_pool, global_add_pool
 
+from .base import (
+    BaseGraphModel,
+    BaseGraphDurationModel,
+    BaseGraphThresholdClassModel,
+    GraphModelConfig,
+)
 from .graph_builder import NUM_GATE_TYPES, NODE_FEAT_DIM, EDGE_FEAT_DIM, GLOBAL_FEAT_DIM_BASE
 
 NUM_FAMILIES = 20
@@ -91,9 +102,12 @@ class GateTypeMessagePassing(MessagePassing):
         return self.msg_mlp(msg_input)
 
 
-class QuantumCircuitGNN(nn.Module):
+class QuantumCircuitGNN(BaseGraphDurationModel):
     """
     GNN for duration prediction: threshold as input (in global features), output log2(duration).
+    
+    Uses per-gate-type learned embeddings that modulate how information
+    propagates through the circuit graph.
     """
 
     def __init__(
@@ -105,7 +119,19 @@ class QuantumCircuitGNN(nn.Module):
         num_layers: int = 4,
         dropout: float = 0.1,
     ):
-        super().__init__()
+        config = GraphModelConfig(
+            node_feat_dim=node_feat_dim,
+            edge_feat_dim=edge_feat_dim,
+            global_feat_dim=global_feat_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+        super().__init__(config)
+        
+        self.hidden_dim = hidden_dim
+        self.pool_dim = 3 * hidden_dim
+        
         self.node_embed = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.ReLU(),
@@ -121,14 +147,13 @@ class QuantumCircuitGNN(nn.Module):
             for _ in range(num_layers)
         ])
         self.mp_dropout = nn.Dropout(dropout)
-        pool_dim = 3 * hidden_dim
         self.global_proj = nn.Sequential(
             nn.Linear(global_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout),
         )
-        combined_dim = pool_dim + hidden_dim
+        combined_dim = self.pool_dim + hidden_dim
         self.combined_mlp = nn.Sequential(
             nn.Linear(combined_dim, hidden_dim * 2),
             nn.ReLU(),
@@ -139,7 +164,51 @@ class QuantumCircuitGNN(nn.Module):
             nn.Dropout(dropout),
         )
         self.runtime_head = nn.Linear(hidden_dim, 1)
-
+    
+    @property
+    def name(self) -> str:
+        return "QuantumCircuitGNN"
+    
+    def encode_nodes(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        edge_gate_type: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.node_embed(x)
+        for mp_layer in self.mp_layers:
+            h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
+            h = h + self.mp_dropout(h_new)
+        return h
+    
+    def pool_graph(
+        self,
+        node_embeddings: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
+        h_mean = global_mean_pool(node_embeddings, batch)
+        h_max = global_max_pool(node_embeddings, batch)
+        h_sum = global_add_pool(node_embeddings, batch)
+        return torch.cat([h_mean, h_max, h_sum], dim=-1)
+    
+    def predict_runtime(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        edge_gate_type: torch.Tensor,
+        batch: torch.Tensor,
+        global_features: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.encode_nodes(x, edge_index, edge_attr, edge_gate_type, batch)
+        h_graph = self.pool_graph(h, batch)
+        g = self.global_proj(global_features)
+        combined = torch.cat([h_graph, g], dim=-1)
+        combined = self.combined_mlp(combined)
+        return self.runtime_head(combined).squeeze(-1)
+    
     def forward(
         self,
         x: torch.Tensor,
@@ -149,18 +218,9 @@ class QuantumCircuitGNN(nn.Module):
         batch: torch.Tensor,
         global_features: torch.Tensor,
     ) -> torch.Tensor:
-        h = self.node_embed(x)
-        for mp_layer in self.mp_layers:
-            h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
-            h = h + self.mp_dropout(h_new)
-        h_mean = global_mean_pool(h, batch)
-        h_max = global_max_pool(h, batch)
-        h_sum = global_add_pool(h, batch)
-        h_graph = torch.cat([h_mean, h_max, h_sum], dim=-1)
-        g = self.global_proj(global_features)
-        combined = torch.cat([h_graph, g], dim=-1)
-        combined = self.combined_mlp(combined)
-        return self.runtime_head(combined).squeeze(-1)
+        return self.predict_runtime(
+            x, edge_index, edge_attr, edge_gate_type, batch, global_features
+        )
 
 
 def create_gnn_model(
@@ -187,9 +247,12 @@ def create_gnn_model(
 GLOBAL_FEAT_DIM_THRESHOLD_CLASS = GLOBAL_FEAT_DIM_BASE + NUM_FAMILIES
 
 
-class QuantumCircuitGNNThresholdClass(nn.Module):
+class QuantumCircuitGNNThresholdClass(BaseGraphThresholdClassModel):
     """
     GNN for threshold-class prediction: global features without log2(threshold) and duration, output class logits.
+    
+    Predicts the optimal threshold class for achieving target fidelity
+    in quantum circuit simulation.
     """
 
     def __init__(
@@ -202,7 +265,20 @@ class QuantumCircuitGNNThresholdClass(nn.Module):
         num_layers: int = 4,
         dropout: float = 0.1,
     ):
-        super().__init__()
+        config = GraphModelConfig(
+            node_feat_dim=node_feat_dim,
+            edge_feat_dim=edge_feat_dim,
+            global_feat_dim=global_feat_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+        super().__init__(config)
+        
+        self.hidden_dim = hidden_dim
+        self.pool_dim = 3 * hidden_dim
+        self.num_classes = num_classes
+        
         self.node_embed = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.ReLU(),
@@ -218,14 +294,13 @@ class QuantumCircuitGNNThresholdClass(nn.Module):
             for _ in range(num_layers)
         ])
         self.mp_dropout = nn.Dropout(dropout)
-        pool_dim = 3 * hidden_dim
         self.global_proj = nn.Sequential(
             nn.Linear(global_feat_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout),
         )
-        combined_dim = pool_dim + hidden_dim
+        combined_dim = self.pool_dim + hidden_dim
         self.combined_mlp = nn.Sequential(
             nn.Linear(combined_dim, hidden_dim * 2),
             nn.ReLU(),
@@ -236,7 +311,51 @@ class QuantumCircuitGNNThresholdClass(nn.Module):
             nn.Dropout(dropout),
         )
         self.class_head = nn.Linear(hidden_dim, num_classes)
-
+    
+    @property
+    def name(self) -> str:
+        return "QuantumCircuitGNNThresholdClass"
+    
+    def encode_nodes(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        edge_gate_type: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.node_embed(x)
+        for mp_layer in self.mp_layers:
+            h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
+            h = h + self.mp_dropout(h_new)
+        return h
+    
+    def pool_graph(
+        self,
+        node_embeddings: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
+        h_mean = global_mean_pool(node_embeddings, batch)
+        h_max = global_max_pool(node_embeddings, batch)
+        h_sum = global_add_pool(node_embeddings, batch)
+        return torch.cat([h_mean, h_max, h_sum], dim=-1)
+    
+    def predict_logits(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        edge_gate_type: torch.Tensor,
+        batch: torch.Tensor,
+        global_features: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.encode_nodes(x, edge_index, edge_attr, edge_gate_type, batch)
+        h_graph = self.pool_graph(h, batch)
+        g = self.global_proj(global_features)
+        combined = torch.cat([h_graph, g], dim=-1)
+        combined = self.combined_mlp(combined)
+        return self.class_head(combined)
+    
     def forward(
         self,
         x: torch.Tensor,
@@ -246,18 +365,9 @@ class QuantumCircuitGNNThresholdClass(nn.Module):
         batch: torch.Tensor,
         global_features: torch.Tensor,
     ) -> torch.Tensor:
-        h = self.node_embed(x)
-        for mp_layer in self.mp_layers:
-            h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
-            h = h + self.mp_dropout(h_new)
-        h_mean = global_mean_pool(h, batch)
-        h_max = global_max_pool(h, batch)
-        h_sum = global_add_pool(h, batch)
-        h_graph = torch.cat([h_mean, h_max, h_sum], dim=-1)
-        g = self.global_proj(global_features)
-        combined = torch.cat([h_graph, g], dim=-1)
-        combined = self.combined_mlp(combined)
-        return self.class_head(combined)
+        return self.predict_logits(
+            x, edge_index, edge_attr, edge_gate_type, batch, global_features
+        )
 
 
 def create_gnn_threshold_class_model(

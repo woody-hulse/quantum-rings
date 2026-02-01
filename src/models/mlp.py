@@ -32,6 +32,30 @@ def build_mlp_encoder(input_dim: int, hidden_dims: List[int], dropout: float) ->
     return nn.Sequential(*layers), prev_dim
 
 
+class ResidualBlock(nn.Module):
+    """Residual block with skip connection."""
+    
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(dim, dim)
+        self.bn1 = nn.BatchNorm1d(dim)
+        self.fc2 = nn.Linear(dim, dim)
+        self.bn2 = nn.BatchNorm1d(dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.fc1(x)
+        out = self.bn1(out)
+        out = torch.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
+        out = self.bn2(out)
+        out = out + residual
+        out = torch.relu(out)
+        return out
+
+
 class MLPNetwork(nn.Module):
     """MLP for duration prediction: threshold as input, output log2(duration)."""
 
@@ -40,31 +64,70 @@ class MLPNetwork(nn.Module):
         input_dim: int,
         hidden_dims: List[int] = [64, 32],
         dropout: float = 0.1,
+        use_residual: bool = False,
     ):
         super().__init__()
-        self.encoder, enc_dim = build_mlp_encoder(input_dim, hidden_dims, dropout)
+        self.use_residual = use_residual
+        
+        if use_residual and len(hidden_dims) >= 2:
+            self.input_proj = nn.Sequential(
+                nn.Linear(input_dim, hidden_dims[0]),
+                nn.ReLU(),
+                nn.BatchNorm1d(hidden_dims[0]),
+            )
+            self.res_blocks = nn.ModuleList([
+                ResidualBlock(hidden_dims[0], dropout)
+                for _ in range(len(hidden_dims) - 1)
+            ])
+            self.encoder = None
+            enc_dim = hidden_dims[0]
+        else:
+            self.encoder, enc_dim = build_mlp_encoder(input_dim, hidden_dims, dropout)
+            self.input_proj = None
+            self.res_blocks = None
+            
         self.runtime_head = nn.Linear(enc_dim, 1)
+        self._init_weights()
+        
+    def _init_weights(self):
+        """Initialize weights with Xavier/He initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.encoder(x)
+        if self.use_residual and self.input_proj is not None:
+            features = self.input_proj(x)
+            for block in self.res_blocks:
+                features = block(features)
+        else:
+            features = self.encoder(x)
         return self.runtime_head(features).squeeze(-1)
 
 
 class MLPModel(BaseModel):
     """
     MLP for duration prediction: threshold as input parameter, predict log2(duration).
+    
+    For small datasets (< 500 samples), use smaller hidden_dims and higher dropout.
+    Example for small data: hidden_dims=[32, 16], dropout=0.5
     """
 
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: List[int] = [128, 64, 32],
-        dropout: float = 0.2,
-        lr: float = 1e-3,
-        weight_decay: float = 0,
+        hidden_dims: List[int] = [64, 32],
+        dropout: float = 0.4,
+        lr: float = 5e-4,
+        weight_decay: float = 1e-3,
         device: str = "cpu",
-        epochs: int = 100,
-        early_stopping_patience: int = 20,
+        epochs: int = 200,
+        early_stopping_patience: int = 30,
+        use_residual: bool = False,
+        use_huber_loss: bool = True,
+        grad_clip: float = 1.0,
     ):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -74,11 +137,15 @@ class MLPModel(BaseModel):
         self.device = device
         self.epochs = epochs
         self.early_stopping_patience = early_stopping_patience
+        self.use_residual = use_residual
+        self.use_huber_loss = use_huber_loss
+        self.grad_clip = grad_clip
 
         self.network = MLPNetwork(
             input_dim=input_dim,
             hidden_dims=hidden_dims,
             dropout=dropout,
+            use_residual=use_residual,
         ).to(device)
         self.optimizer = optim.AdamW(
             self.network.parameters(), lr=lr, weight_decay=weight_decay
@@ -86,7 +153,10 @@ class MLPModel(BaseModel):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.5, patience=10
         )
-        self.criterion = nn.L1Loss()
+        if use_huber_loss:
+            self.criterion = nn.SmoothL1Loss()
+        else:
+            self.criterion = nn.L1Loss()
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
 
@@ -115,6 +185,8 @@ class MLPModel(BaseModel):
             log2_pred = self.network(features)
             loss = self.criterion(log2_pred, log2_runtime)
             loss.backward()
+            if self.grad_clip > 0:
+                nn.utils.clip_grad_norm_(self.network.parameters(), self.grad_clip)
             self.optimizer.step()
             total_loss += loss.item()
             n_batches += 1
@@ -200,7 +272,12 @@ class MLPModel(BaseModel):
             "network_state": self.network.state_dict(),
             "feature_mean": self.feature_mean,
             "feature_std": self.feature_std,
-            "config": {"input_dim": self.input_dim, "hidden_dims": self.hidden_dims, "dropout": self.dropout},
+            "config": {
+                "input_dim": self.input_dim,
+                "hidden_dims": self.hidden_dims,
+                "dropout": self.dropout,
+                "use_residual": self.use_residual,
+            },
         }, path / "mlp_model.pt")
 
     def load(self, path: Path) -> None:

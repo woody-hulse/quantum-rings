@@ -267,14 +267,90 @@ trainer.fit(train_loader, val_loader, epochs=100)
 
 ---
 
+## Available Graph Model Architectures
+
+The codebase includes multiple GNN architectures, each with different characteristics:
+
+### Architecture Comparison
+
+| Model | Description | Parameters | Key Features |
+|-------|-------------|------------|--------------|
+| **BasicGNN** | Simple message-passing | ~154K | Per-gate-type embeddings, fast training |
+| **ImprovedGNN** | Attention-based | ~222K | Multi-head attention, ordinal regression, stochastic depth |
+| **GraphTransformer** | Full transformer | ~300K+ | Edge-aware attention, positional encoding |
+| **HeteroGNN (QCHGT)** | Heterogeneous GNN | ~400K+ | Multi-relation edges, meta-path attention |
+| **TemporalGNN** | Temporal modeling | ~500K+ | Causal attention, state memory GRU |
+
+### Performance Comparison (Threshold Classification)
+
+Based on empirical testing with default hyperparameters:
+
+| Model | Val Score | Val Accuracy | Underprediction Rate | Training Time |
+|-------|-----------|--------------|---------------------|---------------|
+| BasicGNN | **0.62 ± 0.07** | **0.53 ± 0.08** | **0.20** | 26s |
+| ImprovedGNN | 0.56 ± 0.07 | 0.43 ± 0.08 | 0.31 | 60s |
+
+**Key Findings:**
+1. **BasicGNN outperforms more complex models** on this dataset
+2. Lower underprediction rate is critical (underpredictions score 0)
+3. Simpler models generalize better with limited data
+4. More complex architectures may require more data or careful tuning
+
+### Recommended Approach
+
+For the quantum circuit threshold prediction task:
+
+1. **Start with BasicGNN** - it provides the best balance of performance and simplicity
+2. **Use data augmentation** - qubit permutation and feature noise improve generalization
+3. **Focus on reducing underprediction** - overprediction is preferable (partial score vs. zero)
+4. **Consider ensemble approaches** - combining multiple models can reduce variance
+
+### Unified Model Interface
+
+All graph models implement a consistent interface via `BaseGraphModelWrapper`:
+
+```python
+from models import create_graph_model
+
+model = create_graph_model(
+    model_type="basic",  # or "improved", "transformer", "hetero", "temporal"
+    hidden_dim=64,
+    num_layers=4,
+    num_heads=4,
+    dropout=0.2,
+    use_ordinal=True,
+    use_augmentation=True,
+)
+
+history = model.fit(train_loader, val_loader)
+probs = model.predict_proba(val_loader)
+metrics = model.evaluate(val_loader)
+```
+
+---
+
 ## File Structure
 
 ```
 src/gnn/
-├── __init__.py          # Module exports
-├── graph_builder.py     # QASM parsing and graph construction
-├── model.py             # GNN architecture definitions
-├── dataset.py           # PyTorch Geometric datasets
-├── augmentation.py      # Data augmentation transforms
-└── train.py             # Training loop and evaluation
+├── __init__.py              # Module exports
+├── base.py                  # Abstract base classes for all graph models
+├── graph_builder.py         # QASM parsing and graph construction
+├── model.py                 # Basic GNN architecture
+├── improved_model.py        # Improved GNN with attention
+├── transformer.py           # Graph Transformer architecture
+├── hetero_gnn.py           # Heterogeneous GNN (QCHGT)
+├── temporal_model.py        # Temporal GNN with causal modeling
+├── temporal_graph_builder.py # Temporal graph construction
+├── dataset.py               # PyTorch Geometric datasets
+├── augmentation.py          # Data augmentation transforms
+└── train.py                 # Training loop and evaluation
+
+src/models/
+├── graph_models.py          # Unified wrappers for all graph models
+├── gnn_threshold_class.py   # Legacy GNN wrapper
+└── temporal_gnn_model.py    # Temporal GNN wrappers
+
+scripts/
+└── compare_graph_models.py  # Comprehensive model comparison script
 ```

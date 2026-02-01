@@ -1,0 +1,28 @@
+{
+  "duration": {
+    "Baseline": {
+      "val_mae_mean": 0.8555116522312164,
+      "val_mae_std": 0.0,
+      "avg_overfit_gap": 0.28652424951549615,
+      "runs": [
+        {
+          "train_mae": 0.5689874027157202,
+          "val_mae": 0.8555116522312164,
+          "overfit_gap": 0.28652424951549615
+        }
+      ]
+    },
+    "Improved (Attention + StochDepth)": {
+      "val_mae_mean": 0.812450920343399,
+      "val_mae_std": 0.0,
+      "avg_overfit_gap": 0.1724380119657144,
+      "runs": [
+        {
+          "train_mae": 0.6400129083776847,
+          "val_mae": 0.812450920343399,
+          "overfit_gap": 0.1724380119657144
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-02-01T01:18:05.805056",
+  "config": {
+    "hidden_dim": 64,
+    "num_layers": 4,
+    "num_heads": 4,
+    "dropout": 0.2,
+    "epochs": 30,
+    "patience": 10,
+    "device": "cpu",
+    "use_ordinal": true,
+    "use_augmentation": true
+  },
+  "model_types": [
+    "basic",
+    "improved"
+  ],
+  "n_runs": 1,
+  "results": [
+    {
+      "model_type": "improved",
+      "run_id": 0,
+      "train_time": 26.130309104919434,
+      "parameters": 221768,
+      "train_accuracy": 0.48214285714285715,
+      "train_score": 0.6160714285714286,
+      "val_accuracy": 0.32,
+      "val_score": 0.48,
+      "underpred_rate": 0.36,
+      "overpred_rate": 0.32,
+      "epochs_trained": 11
+    }
+  ],
+  "aggregated": [
+    {
+      "model_type": "improved",
+      "description": "Attention-based GNN with ordinal regression and stochastic depth",
+      "n_runs": 1,
+      "parameters": 221768,
+      "val_accuracy_mean": 0.32,
+      "val_accuracy_std": 0.0,
+      "val_score_mean": 0.48,
+      "val_score_std": 0.0,
+      "underpred_rate_mean": 0.36,
+      "overpred_rate_mean": 0.32,
+      "train_time_mean": 26.130309104919434,
+      "rank_by_score": 1,
+      "rank_by_accuracy": 1
+    }
+  ],
+  "best_model": "improved"
+}

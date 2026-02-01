@@ -47,13 +47,17 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
         self,
         input_dim: int = FEATURE_DIM_WITHOUT_THRESHOLD,
         num_classes: int = NUM_THRESHOLD_CLASSES,
-        hidden_dims: List[int] = [128, 64, 32],
-        dropout: float = 0.2,
+        hidden_dims: List[int] = [256, 128, 64],
+        dropout: float = 0.3,
         lr: float = 1e-3,
-        weight_decay: float = 0,
+        weight_decay: float = 1e-4,
         device: str = "cpu",
-        epochs: int = 100,
-        early_stopping_patience: int = 20,
+        epochs: int = 150,
+        early_stopping_patience: int = 25,
+        use_class_weights: bool = True,
+        conservative_bias: float = 0.0,
+        label_smoothing: float = 0.1,
+        grad_clip: float = 1.0,
     ):
         self.input_dim = input_dim
         self.num_classes = num_classes
@@ -64,6 +68,11 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
         self.device = device
         self.epochs = epochs
         self.early_stopping_patience = early_stopping_patience
+        self.use_class_weights = use_class_weights
+        self.conservative_bias = conservative_bias
+        self.label_smoothing = label_smoothing
+        self.grad_clip = grad_clip
+        
         self.network = MLPThresholdClassNetwork(
             input_dim=input_dim,
             num_classes=num_classes,
@@ -76,9 +85,10 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="max", factor=0.5, patience=10
         )
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
+        self._class_weights: Optional[torch.Tensor] = None
 
     @property
     def name(self) -> str:
@@ -93,6 +103,23 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
             return (x - self.feature_mean) / (self.feature_std + 1e-8)
         return x
 
+    def _compute_class_weights(self, train_loader: DataLoader) -> torch.Tensor:
+        """Compute class weights inversely proportional to class frequencies."""
+        all_labels = []
+        for batch in train_loader:
+            all_labels.extend(batch["threshold_class"].tolist())
+        
+        labels = np.array(all_labels)
+        unique_classes, counts = np.unique(labels, return_counts=True)
+        n_samples = len(labels)
+        
+        weights = np.ones(self.num_classes)
+        for cls, count in zip(unique_classes, counts):
+            weights[cls] = n_samples / (self.num_classes * count)
+        
+        weights = weights / weights.sum() * self.num_classes
+        return torch.tensor(weights, dtype=torch.float32, device=self.device)
+
     def _train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         self.network.train()
         total_loss = 0.0
@@ -105,6 +132,8 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
             logits = self.network(features)
             loss = self.criterion(logits, target)
             loss.backward()
+            if self.grad_clip > 0:
+                nn.utils.clip_grad_norm_(self.network.parameters(), self.grad_clip)
             self.optimizer.step()
             total_loss += loss.item()
             n_batches += 1
@@ -119,6 +148,14 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
     ) -> Dict[str, Any]:
         mean, std = get_feature_statistics(train_loader)
         self._set_normalization(mean, std)
+        
+        if self.use_class_weights:
+            self._class_weights = self._compute_class_weights(train_loader)
+            self.criterion = nn.CrossEntropyLoss(
+                weight=self._class_weights,
+                label_smoothing=self.label_smoothing,
+            )
+        
         history = {"train_loss": [], "val_threshold_score": []}
         best_val_score = -1.0
         patience_counter = 0
@@ -169,10 +206,16 @@ class MLPThresholdClassModel(ThresholdClassBaseModel):
             all_true.extend(target.tolist())
         proba = np.vstack(all_proba)
         true_idx = np.array(all_true, dtype=np.int64)
-        chosen = select_threshold_class_by_expected_score(proba)
+        chosen = select_threshold_class_by_expected_score(proba, conservative_bias=self.conservative_bias)
+        
+        n_underpred = np.sum(chosen < true_idx)
+        n_overpred = np.sum(chosen > true_idx)
+        
         return {
             "threshold_accuracy": float(np.mean(chosen == true_idx)),
             "expected_threshold_score": mean_threshold_score(chosen, true_idx),
+            "underpred_rate": float(n_underpred / len(true_idx)),
+            "overpred_rate": float(n_overpred / len(true_idx)),
         }
 
     @torch.no_grad()

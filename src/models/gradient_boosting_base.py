@@ -145,9 +145,19 @@ class GradientBoostingClassificationModel(ThresholdClassBaseModel):
     - save/load for library-specific serialization
     """
 
-    def __init__(self):
+    def __init__(self, use_class_weights: bool = True, conservative_bias: float = 0.0):
+        """
+        Args:
+            use_class_weights: If True, compute class weights from training data
+                to address class imbalance.
+            conservative_bias: Bias towards higher threshold classes during
+                selection. Range [0, 1]. Higher = more conservative.
+        """
         self.classifier = None
         self.scaler = StandardScaler()
+        self.use_class_weights = use_class_weights
+        self.conservative_bias = conservative_bias
+        self._class_weights = None
 
     @abstractmethod
     def _create_classifier(self, **params) -> Any:
@@ -170,6 +180,19 @@ class GradientBoostingClassificationModel(ThresholdClassBaseModel):
         y = np.array(all_class, dtype=np.int64)
         return X, y
 
+    def _compute_class_weights(self, y: np.ndarray) -> np.ndarray:
+        """Compute class weights inversely proportional to class frequencies."""
+        unique_classes, counts = np.unique(y, return_counts=True)
+        n_samples = len(y)
+        n_classes = NUM_THRESHOLD_CLASSES
+        
+        weights = np.ones(n_classes)
+        for cls, count in zip(unique_classes, counts):
+            weights[cls] = n_samples / (n_classes * count)
+        
+        weights = weights / weights.sum() * n_classes
+        return weights
+
     def fit(
         self,
         train_loader: DataLoader,
@@ -181,6 +204,11 @@ class GradientBoostingClassificationModel(ThresholdClassBaseModel):
         X_val, y_val = self._extract_data(val_loader)
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_val_scaled = self.scaler.transform(X_val)
+
+        if self.use_class_weights:
+            self._class_weights = self._compute_class_weights(y_train)
+            if verbose:
+                print(f"Class weights: {self._class_weights}")
 
         if verbose:
             print("Training threshold-class classifier...")
@@ -214,10 +242,16 @@ class GradientBoostingClassificationModel(ThresholdClassBaseModel):
     def _evaluate_from_arrays(self, X: np.ndarray, y_class: np.ndarray) -> Dict[str, float]:
         """Evaluate predictions against ground truth."""
         proba = self.classifier.predict_proba(X)
-        chosen = select_threshold_class_by_expected_score(proba)
+        chosen = select_threshold_class_by_expected_score(proba, conservative_bias=self.conservative_bias)
+        
+        n_underpred = np.sum(chosen < y_class)
+        n_overpred = np.sum(chosen > y_class)
+        
         return {
             "threshold_accuracy": float(np.mean(chosen == y_class)),
             "expected_threshold_score": mean_threshold_score(chosen, y_class),
+            "underpred_rate": float(n_underpred / len(y_class)),
+            "overpred_rate": float(n_overpred / len(y_class)),
         }
 
     def evaluate(self, loader: DataLoader) -> Dict[str, float]:

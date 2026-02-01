@@ -1,0 +1,132 @@
+{
+  "timestamp": "2026-02-01T01:25:18.996238",
+  "config": {
+    "hidden_dim": 64,
+    "num_layers": 4,
+    "num_heads": 4,
+    "dropout": 0.2,
+    "epochs": 50,
+    "patience": 15,
+    "device": "cpu",
+    "use_ordinal": true,
+    "use_augmentation": true
+  },
+  "model_types": [
+    "basic",
+    "improved"
+  ],
+  "n_runs": 3,
+  "results": [
+    {
+      "model_type": "basic",
+      "run_id": 0,
+      "train_time": 25.145075798034668,
+      "parameters": 153993,
+      "train_accuracy": 0.875,
+      "train_score": 0.9017857142857143,
+      "val_accuracy": 0.64,
+      "val_score": 0.72,
+      "underpred_rate": 0.2,
+      "overpred_rate": 0.16,
+      "epochs_trained": 28
+    },
+    {
+      "model_type": "basic",
+      "run_id": 1,
+      "train_time": 27.2585608959198,
+      "parameters": 153993,
+      "train_accuracy": 0.9017857142857143,
+      "train_score": 0.9285714285714286,
+      "val_accuracy": 0.48,
+      "val_score": 0.58,
+      "underpred_rate": 0.2,
+      "overpred_rate": 0.32,
+      "epochs_trained": 30
+    },
+    {
+      "model_type": "basic",
+      "run_id": 2,
+      "train_time": 25.846280097961426,
+      "parameters": 153993,
+      "train_accuracy": 0.9107142857142857,
+      "train_score": 0.9508928571428571,
+      "val_accuracy": 0.48,
+      "val_score": 0.57,
+      "underpred_rate": 0.2,
+      "overpred_rate": 0.32,
+      "epochs_trained": 29
+    },
+    {
+      "model_type": "improved",
+      "run_id": 0,
+      "train_time": 38.89544701576233,
+      "parameters": 221768,
+      "train_accuracy": 0.48214285714285715,
+      "train_score": 0.6160714285714286,
+      "val_accuracy": 0.32,
+      "val_score": 0.48,
+      "underpred_rate": 0.36,
+      "overpred_rate": 0.32,
+      "epochs_trained": 16
+    },
+    {
+      "model_type": "improved",
+      "run_id": 1,
+      "train_time": 59.905341386795044,
+      "parameters": 221768,
+      "train_accuracy": 0.7678571428571429,
+      "train_score": 0.7991071428571429,
+      "val_accuracy": 0.48,
+      "val_score": 0.56,
+      "underpred_rate": 0.36,
+      "overpred_rate": 0.16,
+      "epochs_trained": 25
+    },
+    {
+      "model_type": "improved",
+      "run_id": 2,
+      "train_time": 80.94690418243408,
+      "parameters": 221768,
+      "train_accuracy": 0.625,
+      "train_score": 0.7611607142857143,
+      "val_accuracy": 0.48,
+      "val_score": 0.64,
+      "underpred_rate": 0.2,
+      "overpred_rate": 0.32,
+      "epochs_trained": 28
+    }
+  ],
+  "aggregated": [
+    {
+      "model_type": "basic",
+      "description": "Simple message-passing GNN with per-gate-type embeddings",
+      "n_runs": 3,
+      "parameters": 153993,
+      "val_accuracy_mean": 0.5333333333333333,
+      "val_accuracy_std": 0.07542472332656508,
+      "val_score_mean": 0.6233333333333332,
+      "val_score_std": 0.06847546194724713,
+      "underpred_rate_mean": 0.20000000000000004,
+      "overpred_rate_mean": 0.26666666666666666,
+      "train_time_mean": 26.083305597305298,
+      "rank_by_score": 1,
+      "rank_by_accuracy": 1
+    },
+    {
+      "model_type": "improved",
+      "description": "Attention-based GNN with ordinal regression and stochastic depth",
+      "n_runs": 3,
+      "parameters": 221768,
+      "val_accuracy_mean": 0.4266666666666667,
+      "val_accuracy_std": 0.07542472332656505,
+      "val_score_mean": 0.56,
+      "val_score_std": 0.0653197264742181,
+      "underpred_rate_mean": 0.30666666666666664,
+      "overpred_rate_mean": 0.26666666666666666,
+      "train_time_mean": 59.91589752833048,
+      "rank_by_score": 2,
+      "rank_by_accuracy": 2
+    }
+  ],
+  "best_model": "basic"
+}

@@ -28,10 +28,12 @@ class XGBoostThresholdClassModel(GradientBoostingClassificationModel):
         subsample: float = 0.8,
         colsample_bytree: float = 0.8,
         random_state: int = 42,
+        use_class_weights: bool = True,
+        conservative_bias: float = 0.0,
     ):
         if not HAS_XGBOOST:
             raise ImportError("xgboost is required. Install with: pip install xgboost")
-        super().__init__()
+        super().__init__(use_class_weights=use_class_weights, conservative_bias=conservative_bias)
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.n_estimators = n_estimators
@@ -73,13 +75,20 @@ class XGBoostThresholdClassModel(GradientBoostingClassificationModel):
         unique_classes = set(y_train)
         missing_classes = set(range(NUM_THRESHOLD_CLASSES)) - unique_classes
         
+        sample_weight = None
+        if self.use_class_weights and self._class_weights is not None:
+            sample_weight = np.array([self._class_weights[int(y)] for y in y_train])
+        
         if missing_classes:
             dummy_X = np.zeros((len(missing_classes), X_train.shape[1]))
             dummy_y = np.array(list(missing_classes), dtype=np.int64)
             X_train = np.vstack([X_train, dummy_X])
             y_train = np.concatenate([y_train, dummy_y])
+            if sample_weight is not None:
+                dummy_weights = np.full(len(missing_classes), 0.001)
+                sample_weight = np.concatenate([sample_weight, dummy_weights])
         
-        self.classifier.fit(X_train, y_train, verbose=False)
+        self.classifier.fit(X_train, y_train, sample_weight=sample_weight, verbose=False)
 
     def save(self, path: Path) -> None:
         path = Path(path)

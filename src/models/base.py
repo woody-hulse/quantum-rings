@@ -118,12 +118,34 @@ class ThresholdClassBaseModel(ABC):
         """Return dict with threshold_accuracy, expected_threshold_score, etc."""
         pass
 
-    def predict(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Choose threshold class by max expected score; return (threshold_values, placeholder_runtime)."""
+    def predict(
+        self,
+        features: np.ndarray,
+        use_safety_margin: bool = True,
+        safety_margin: int = 1,
+        min_confidence: float = 0.5,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Choose threshold class by max expected score; return (threshold_values, placeholder_runtime).
+        
+        Args:
+            features: Input features.
+            use_safety_margin: If True, apply safety margin to reduce underprediction.
+            safety_margin: Number of classes to add when confidence is below min_confidence.
+            min_confidence: Threshold for applying safety margin.
+        """
         from data_loader import THRESHOLD_LADDER
-        from scoring import select_threshold_class_by_expected_score
+        from scoring import select_threshold_class_by_expected_score, select_threshold_with_safety_margin
         proba = self.predict_proba(features)
-        chosen = select_threshold_class_by_expected_score(proba)
+        
+        if use_safety_margin:
+            chosen = select_threshold_with_safety_margin(
+                proba,
+                safety_margin=safety_margin,
+                min_confidence=min_confidence,
+            )
+        else:
+            chosen = select_threshold_class_by_expected_score(proba)
+            
         threshold_values = np.array([THRESHOLD_LADDER[c] for c in chosen])
         runtime_values = np.ones_like(threshold_values, dtype=float)
         return threshold_values, runtime_values

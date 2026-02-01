@@ -1,0 +1,92 @@
+{
+  "threshold": {
+    "Baseline (CE)": {
+      "val_score_mean": 0.5733333333333334,
+      "val_score_std": 0.018856180831641232,
+      "avg_underpred_rate": 0.3066666666666667,
+      "runs": [
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.6,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        }
+      ]
+    },
+    "Improved + Ordinal": {
+      "val_score_mean": 0.66,
+      "val_score_std": 0.028284271247461874,
+      "avg_underpred_rate": 0.20000000000000004,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.7,
+          "underpred_rate": 0.2,
+          "accuracy": 0.6
+        }
+      ]
+    },
+    "Improved + Focal": {
+      "val_score_mean": 0.7200000000000001,
+      "val_score_std": 0.0653197264742181,
+      "avg_underpred_rate": 0.25333333333333335,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.72,
+          "underpred_rate": 0.2,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.8,
+          "underpred_rate": 0.2,
+          "accuracy": 0.8
+        }
+      ]
+    },
+    "Improved + Conservative CE": {
+      "val_score_mean": 0.6133333333333334,
+      "val_score_std": 0.03771236166328251,
+      "avg_underpred_rate": 0.30666666666666664,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        },
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        },
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        }
+      ]
+    }
+  }
+}

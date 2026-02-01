@@ -1,0 +1,52 @@
+{
+  "threshold": {
+    "Baseline (CE)": {
+      "val_score_mean": 0.56,
+      "val_score_std": 0.0,
+      "avg_underpred_rate": 0.36,
+      "runs": [
+        {
+          "val_score": 0.56,
+          "underpred_rate": 0.36,
+          "accuracy": 0.48
+        }
+      ]
+    },
+    "Improved + Ordinal": {
+      "val_score_mean": 0.64,
+      "val_score_std": 0.0,
+      "avg_underpred_rate": 0.2,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.2,
+          "accuracy": 0.48
+        }
+      ]
+    },
+    "Improved + Focal": {
+      "val_score_mean": 0.64,
+      "val_score_std": 0.0,
+      "avg_underpred_rate": 0.36,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        }
+      ]
+    },
+    "Improved + Conservative CE": {
+      "val_score_mean": 0.64,
+      "val_score_std": 0.0,
+      "avg_underpred_rate": 0.36,
+      "runs": [
+        {
+          "val_score": 0.64,
+          "underpred_rate": 0.36,
+          "accuracy": 0.64
+        }
+      ]
+    }
+  }
+}
