@@ -241,12 +241,13 @@ def run_single_experiment_duration(
     true_thresh = np.array(true_thresh)
     true_runtime = np.array(true_runtime)
     
-    challenge_score = compute_challenge_score(
-        threshold_pred=pred_thresh,
-        threshold_true=true_thresh,
-        runtime_pred=pred_runtime,
-        runtime_true=true_runtime,
+    score_result = compute_challenge_score(
+        pred_threshold=pred_thresh,
+        true_threshold=true_thresh,
+        pred_runtime=pred_runtime,
+        true_runtime=true_runtime,
     )
+    challenge_score = score_result.get("overall_score", score_result.get("mean_score", 0.0))
     
     n_params = sum(p.numel() for p in model.parameters())
     

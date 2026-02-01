@@ -62,9 +62,10 @@ def plot_feature_importance(
     
     ax.barh(range(len(top_names)), top_importances, color="steelblue")
     ax.set_yticks(range(len(top_names)))
-    ax.set_yticklabels(top_names, fontsize=9)
-    ax.set_xlabel("Importance", fontsize=11)
-    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_yticklabels(top_names, fontsize=12)
+    ax.set_xlabel("Importance", fontsize=14)
+    ax.set_title(title, fontsize=16, fontweight="bold")
+    ax.tick_params(axis="x", labelsize=12)
     ax.xaxis.grid(True, linestyle="--", alpha=0.7)
     
     ax.spines["top"].set_visible(False)
