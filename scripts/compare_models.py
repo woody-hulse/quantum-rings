@@ -120,14 +120,15 @@ THRESHOLD_CLASS_MODELS = {
             "iterations": 100,
         },
     },
-    "LightGBM": {
-        "class": "LightGBMModel",
+    "RandomForest": {
+        "class": "RandomForestThresholdClassModel",
         "is_graph": False,
-        "description": "Light gradient boosting machine",
+        "description": "Random forest for threshold-class",
         "config": {
-            "max_depth": 6,
-            "learning_rate": 0.1,
             "n_estimators": 100,
+            "max_depth": 12,
+            "min_samples_split": 5,
+            "min_samples_leaf": 2,
         },
     },
     "MLP": {
@@ -141,22 +142,10 @@ THRESHOLD_CLASS_MODELS = {
             "early_stopping_patience": 25,
         },
     },
-    "BasicGNN": {
-        "class": "BasicGNNThresholdClassModel",
-        "is_graph": True,
-        "description": "Simple message-passing GNN",
-        "config": {
-            "hidden_dim": 64,
-            "num_layers": 4,
-            "dropout": 0.2,
-            "epochs": 100,
-            "patience": 20,
-        },
-    },
-    "ImprovedGNN": {
+    "MPNN": {
         "class": "ImprovedGNNThresholdClassModel",
         "is_graph": True,
-        "description": "Attention-based GNN with ordinal regression",
+        "description": "Attention-based message-passing GNN with ordinal regression",
         "config": {
             "hidden_dim": 64,
             "num_layers": 4,
@@ -218,6 +207,27 @@ DURATION_MODELS = {
             "n_estimators": 100,
         },
     },
+    "LightGBM": {
+        "class": "LightGBMModel",
+        "is_graph": False,
+        "description": "Light gradient boosting machine for duration regression",
+        "config": {
+            "max_depth": 6,
+            "learning_rate": 0.1,
+            "n_estimators": 100,
+        },
+    },
+    "RandomForest": {
+        "class": "RandomForestModel",
+        "is_graph": False,
+        "description": "Random forest for duration regression",
+        "config": {
+            "n_estimators": 100,
+            "max_depth": 12,
+            "min_samples_split": 5,
+            "min_samples_leaf": 2,
+        },
+    },
     "MLP": {
         "class": "MLPModel",
         "is_graph": False,
@@ -226,6 +236,58 @@ DURATION_MODELS = {
             "hidden_dims": [256, 128, 64],
             "dropout": 0.3,
             "epochs": 150,
+        },
+    },
+    "MPNN": {
+        "class": "ImprovedGNNDurationModel",
+        "is_graph": True,
+        "description": "Attention-based message-passing GNN for duration regression",
+        "config": {
+            "hidden_dim": 64,
+            "num_layers": 4,
+            "num_heads": 4,
+            "dropout": 0.2,
+            "epochs": 100,
+            "patience": 20,
+        },
+    },
+    "GraphTransformer": {
+        "class": "GraphTransformerDurationModel",
+        "is_graph": True,
+        "description": "Full transformer attention for duration regression",
+        "config": {
+            "hidden_dim": 64,
+            "num_layers": 4,
+            "num_heads": 4,
+            "dropout": 0.2,
+            "epochs": 100,
+            "patience": 20,
+        },
+    },
+    "HeteroGNN": {
+        "class": "HeteroGNNDurationModel",
+        "is_graph": True,
+        "description": "Heterogeneous multi-relation GNN (QCHGT) for duration regression",
+        "config": {
+            "hidden_dim": 64,
+            "num_layers": 4,
+            "num_heads": 4,
+            "dropout": 0.2,
+            "epochs": 100,
+            "patience": 20,
+        },
+    },
+    "TemporalGNN": {
+        "class": "TemporalGNNDurationModel",
+        "is_graph": True,
+        "description": "Temporal/causal modeling GNN for duration regression",
+        "config": {
+            "hidden_dim": 64,
+            "num_layers": 4,
+            "num_heads": 4,
+            "dropout": 0.2,
+            "epochs": 100,
+            "patience": 20,
         },
     },
 }
@@ -274,6 +336,8 @@ def create_model(
         MLPThresholdClassModel,
         XGBoostModel,
         MLPModel,
+        RandomForestModel,
+        RandomForestThresholdClassModel,
     )
     
     model_class_name = model_config["class"]
@@ -291,23 +355,42 @@ def create_model(
     elif model_class_name == "XGBoostModel":
         return XGBoostModel(**config)
     elif model_class_name == "MLPModel":
+        config["input_dim"] = config.get("input_dim", FEATURE_DIM_WITHOUT_THRESHOLD + 1)
         return MLPModel(**config)
     elif model_class_name == "LightGBMModel":
         from models import LightGBMModel
         return LightGBMModel(**config)
+    elif model_class_name == "RandomForestModel":
+        return RandomForestModel(**config)
+    elif model_class_name == "RandomForestThresholdClassModel":
+        return RandomForestThresholdClassModel(**config)
     elif model_config["is_graph"]:
-        from models.graph_models import create_graph_model, get_all_model_types
-        
-        model_type_map = {
-            "BasicGNNThresholdClassModel": "basic",
-            "ImprovedGNNThresholdClassModel": "improved",
-            "GraphTransformerThresholdClassModel": "transformer",
-            "HeteroGNNThresholdClassModel": "hetero",
-            "TemporalGNNThresholdClassModelV2": "temporal",
-        }
-        model_type = model_type_map.get(model_class_name, "basic")
         config["device"] = device
-        return create_graph_model(model_type=model_type, **config)
+        
+        if task == ModelTask.THRESHOLD:
+            from models.graph_models import create_graph_model
+            
+            model_type_map = {
+                "BasicGNNThresholdClassModel": "basic",
+                "ImprovedGNNThresholdClassModel": "improved",
+                "GraphTransformerThresholdClassModel": "transformer",
+                "HeteroGNNThresholdClassModel": "hetero",
+                "TemporalGNNThresholdClassModelV2": "temporal",
+            }
+            model_type = model_type_map.get(model_class_name, "basic")
+            return create_graph_model(model_type=model_type, **config)
+        else:
+            from models.graph_models import create_graph_duration_model
+            
+            model_type_map = {
+                "BasicGNNDurationModel": "basic",
+                "ImprovedGNNDurationModel": "improved",
+                "GraphTransformerDurationModel": "transformer",
+                "HeteroGNNDurationModel": "hetero",
+                "TemporalGNNDurationModel": "temporal",
+            }
+            model_type = model_type_map.get(model_class_name, "basic")
+            return create_graph_duration_model(model_type=model_type, **config)
     else:
         raise ValueError(f"Unknown model class: {model_class_name}")
 
@@ -466,91 +549,122 @@ def print_results_table(aggregated: List[AggregatedResult], task: ModelTask) -> 
     print("\n" + "=" * 110)
 
 
+GRAPH_COLOR = "#e65100"
+TABULAR_COLOR = "#1565c0"
+
+PLOT_FIGSIZE = (8, 5)
+PLOT_TITLE_SIZE = 13
+PLOT_LABEL_SIZE = 11
+PLOT_TICK_SIZE = 10
+PLOT_LEGEND_SIZE = 10
+
+
+def _style_bar_ax(ax, model_names: List[str], colors: List[str], has_both_types: bool) -> None:
+    ax.set_xticks(np.arange(len(model_names)))
+    ax.set_xticklabels(model_names, rotation=45, ha="right", fontsize=PLOT_TICK_SIZE)
+    ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
+    ax.set_ylabel(ax.get_ylabel(), fontsize=PLOT_LABEL_SIZE)
+    ax.set_title(ax.get_title(), fontsize=PLOT_TITLE_SIZE)
+    ax.grid(axis="y", alpha=0.3)
+    if has_both_types:
+        ax.legend(
+            handles=[
+                mpatches.Patch(color=GRAPH_COLOR, label="Graph-based"),
+                mpatches.Patch(color=TABULAR_COLOR, label="Tabular"),
+            ],
+            loc="best",
+            fontsize=PLOT_LEGEND_SIZE,
+        )
+
+
 def plot_comparison(
     aggregated: List[AggregatedResult],
     task: ModelTask,
     output_dir: Path,
     timestamp: str,
 ) -> None:
-    """Generate comparison plots."""
+    """Generate and save each comparison plot separately."""
     if not aggregated:
         return
-    
+
     if task == ModelTask.THRESHOLD:
         by_primary = sorted(aggregated, key=lambda x: x.val_primary_mean, reverse=True)
     else:
         by_primary = sorted(aggregated, key=lambda x: x.val_primary_mean, reverse=False)
-    
+
     model_names = [r.model_name for r in by_primary]
     is_graph = [r.is_graph for r in by_primary]
-    
-    colors = ['#2ecc71' if g else '#3498db' for g in is_graph]
-    
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f"Model Comparison: {task.value.title()} Task", fontsize=14, fontweight='bold')
-    
+    colors = [GRAPH_COLOR if g else TABULAR_COLOR for g in is_graph]
+    has_both_types = any(is_graph) and not all(is_graph)
     x = np.arange(len(model_names))
-    
-    ax1 = axes[0, 0]
+
+    n_vals = [max(1, r.n_runs) for r in by_primary]
+    primary_sem = [r.val_primary_std / np.sqrt(n) for r, n in zip(by_primary, n_vals)]
+    secondary_sem = [r.val_secondary_std / np.sqrt(n) for r, n in zip(by_primary, n_vals)]
+
+    fig1, ax1 = plt.subplots(figsize=PLOT_FIGSIZE)
     primary_vals = [r.val_primary_mean for r in by_primary]
-    primary_errs = [r.val_primary_std for r in by_primary]
-    bars1 = ax1.bar(x, primary_vals, yerr=primary_errs, color=colors, capsize=4, alpha=0.8)
+    ax1.bar(x, primary_vals, yerr=primary_sem, color=colors, capsize=4, alpha=1.0)
     if task == ModelTask.THRESHOLD:
         ax1.set_ylabel("Expected Threshold Score")
         ax1.set_title("Validation Score (Higher is Better)")
     else:
         ax1.set_ylabel("Mean Absolute Error (log2)")
         ax1.set_title("Validation MAE (Lower is Better)")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(model_names, rotation=45, ha='right')
-    ax1.grid(axis='y', alpha=0.3)
-    
-    ax2 = axes[0, 1]
+    _style_bar_ax(ax1, model_names, colors, has_both_types)
+    plt.tight_layout()
+    p1 = output_dir / f"model_comparison_{task.value}_primary_{timestamp}.png"
+    plt.savefig(p1, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Plot saved: {p1}")
+
+    fig2, ax2 = plt.subplots(figsize=PLOT_FIGSIZE)
     secondary_vals = [r.val_secondary_mean for r in by_primary]
-    secondary_errs = [r.val_secondary_std for r in by_primary]
-    bars2 = ax2.bar(x, secondary_vals, yerr=secondary_errs, color=colors, capsize=4, alpha=0.8)
+    ax2.bar(x, secondary_vals, yerr=secondary_sem, color=colors, capsize=4, alpha=1.0)
     if task == ModelTask.THRESHOLD:
         ax2.set_ylabel("Accuracy")
-        ax2.set_title("Validation Accuracy (Higher is Better)")
+        ax2.set_title("Threshold: Validation Accuracy (Higher is Better)")
     else:
         ax2.set_ylabel("Mean Squared Error (log2)")
         ax2.set_title("Validation MSE (Lower is Better)")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(model_names, rotation=45, ha='right')
-    ax2.grid(axis='y', alpha=0.3)
-    
-    ax3 = axes[1, 0]
+    _style_bar_ax(ax2, model_names, colors, has_both_types)
+    plt.tight_layout()
+    p2 = output_dir / f"model_comparison_{task.value}_secondary_{timestamp}.png"
+    plt.savefig(p2, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Plot saved: {p2}")
+
+    fig3, ax3 = plt.subplots(figsize=PLOT_FIGSIZE)
     params = [r.parameters if r.parameters > 0 else 1 for r in by_primary]
-    bars3 = ax3.bar(x, params, color=colors, alpha=0.8)
+    ax3.bar(x, params, color=colors, alpha=1.0)
     ax3.set_ylabel("Parameters (count)")
     ax3.set_title("Model Size (Parameters)")
-    ax3.set_yscale('log')
-    ax3.set_xticks(x)
-    ax3.set_xticklabels(model_names, rotation=45, ha='right')
-    ax3.grid(axis='y', alpha=0.3)
-    
-    ax4 = axes[1, 1]
+    ax3.set_yscale("log")
+    _style_bar_ax(ax3, model_names, colors, has_both_types)
+    plt.tight_layout()
+    p3 = output_dir / f"model_comparison_{task.value}_parameters_{timestamp}.png"
+    plt.savefig(p3, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Plot saved: {p3}")
+
+    fig4, ax4 = plt.subplots(figsize=PLOT_FIGSIZE)
     times = [r.train_time_mean for r in by_primary]
-    bars4 = ax4.bar(x, times, color=colors, alpha=0.8)
+    ax4.bar(x, times, color=colors, alpha=1.0)
     ax4.set_ylabel("Time (seconds)")
     ax4.set_title("Training Time")
-    ax4.set_xticks(x)
-    ax4.set_xticklabels(model_names, rotation=45, ha='right')
-    ax4.grid(axis='y', alpha=0.3)
-    
-    graph_patch = mpatches.Patch(color='#2ecc71', label='Graph-based', alpha=0.8)
-    tabular_patch = mpatches.Patch(color='#3498db', label='Tabular', alpha=0.8)
-    fig.legend(handles=[graph_patch, tabular_patch], loc='upper right', bbox_to_anchor=(0.98, 0.98))
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    
-    plot_path = output_dir / f"model_comparison_{task.value}_{timestamp}.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    _style_bar_ax(ax4, model_names, colors, has_both_types)
+    plt.tight_layout()
+    p4 = output_dir / f"model_comparison_{task.value}_time_{timestamp}.png"
+    plt.savefig(p4, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"\nPlot saved to: {plot_path}")
+    print(f"Plot saved: {p4}")
     
     if task == ModelTask.THRESHOLD:
         plot_underpred(by_primary, output_dir, timestamp)
+
+
+UNDERPRED_COLOR = "#b71c1c"
+OVERPRED_COLOR = "#e65100"
 
 
 def plot_underpred(aggregated: List[AggregatedResult], output_dir: Path, timestamp: str) -> None:
@@ -558,29 +672,28 @@ def plot_underpred(aggregated: List[AggregatedResult], output_dir: Path, timesta
     model_names = [r.model_name for r in aggregated]
     underpred = [r.extra_metrics.get("underpred_rate_mean", 0) for r in aggregated]
     overpred = [r.extra_metrics.get("overpred_rate_mean", 0) for r in aggregated]
-    
+
     if all(v == 0 for v in underpred + overpred):
         return
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
+
+    fig, ax = plt.subplots(figsize=PLOT_FIGSIZE)
     x = np.arange(len(model_names))
     width = 0.35
-    
-    bars1 = ax.bar(x - width/2, underpred, width, label='Underprediction', color='#e74c3c', alpha=0.8)
-    bars2 = ax.bar(x + width/2, overpred, width, label='Overprediction', color='#f39c12', alpha=0.8)
-    
-    ax.set_ylabel('Rate')
-    ax.set_title('Prediction Error Types (Threshold Task)')
+
+    ax.bar(x - width / 2, underpred, width, label="Underprediction", color=UNDERPRED_COLOR, alpha=1.0)
+    ax.bar(x + width / 2, overpred, width, label="Overprediction", color=OVERPRED_COLOR, alpha=1.0)
+
+    ax.set_ylabel("Rate", fontsize=PLOT_LABEL_SIZE)
+    ax.set_title("Prediction Error Types (Threshold Task)", fontsize=PLOT_TITLE_SIZE)
     ax.set_xticks(x)
-    ax.set_xticklabels(model_names, rotation=45, ha='right')
-    ax.legend()
-    ax.grid(axis='y', alpha=0.3)
-    
+    ax.set_xticklabels(model_names, rotation=45, ha="right", fontsize=PLOT_TICK_SIZE)
+    ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
+    ax.legend(fontsize=PLOT_LEGEND_SIZE)
+    ax.grid(axis="y", alpha=0.3)
+
     plt.tight_layout()
-    
     plot_path = output_dir / f"prediction_errors_{timestamp}.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Error plot saved to: {plot_path}")
 
@@ -591,7 +704,8 @@ def run_comparison(
     task: ModelTask,
     suite: ModelSuite,
     model_names: Optional[List[str]] = None,
-    n_runs: int = 3,
+    n_runs: int = 5,
+    n_folds: int = 5,
     batch_size: int = 16,
     device: str = "cpu",
     seed: int = 42,
@@ -613,47 +727,106 @@ def run_comparison(
     else:
         selected_models = model_catalog
     
+    use_kfold = n_folds > 1
     print("=" * 80)
     print("QUANTUM CIRCUIT MODEL COMPARISON")
     print("=" * 80)
     print(f"\nTask: {task.value}")
     print(f"Models: {list(selected_models.keys())}")
     print(f"Runs per model: {n_runs}")
+    print(f"K-fold: {n_folds}" if use_kfold else "Single train/val split")
     print(f"Batch size: {batch_size}")
     print(f"Device: {device}")
     
     print("\nLoading data...")
-    if task == ModelTask.THRESHOLD:
-        train_loader, val_loader = create_threshold_class_data_loaders(
-            data_path=data_path,
-            circuits_dir=circuits_dir,
-            batch_size=batch_size,
-            val_fraction=0.2,
-            seed=seed,
-        )
-        
-        has_graph = any(v["is_graph"] for v in selected_models.values())
-        if has_graph:
-            from gnn.dataset import create_threshold_class_graph_data_loaders
-            graph_train_loader, graph_val_loader = create_threshold_class_graph_data_loaders(
+    has_graph = any(v["is_graph"] for v in selected_models.values())
+    
+    if use_kfold:
+        if task == ModelTask.THRESHOLD:
+            from data_loader import create_kfold_threshold_class_data_loaders
+            tabular_fold_loaders = create_kfold_threshold_class_data_loaders(
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                n_folds=n_folds,
+                batch_size=batch_size,
+                seed=seed,
+            )
+            if has_graph:
+                from gnn.dataset import create_kfold_threshold_class_graph_data_loaders
+                graph_fold_loaders = create_kfold_threshold_class_graph_data_loaders(
+                    data_path=data_path,
+                    circuits_dir=circuits_dir,
+                    n_folds=n_folds,
+                    batch_size=batch_size,
+                    seed=seed,
+                )
+            else:
+                graph_fold_loaders = None
+        else:
+            from data_loader import create_kfold_data_loaders
+            tabular_fold_loaders = create_kfold_data_loaders(
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                n_folds=n_folds,
+                batch_size=batch_size,
+                seed=seed,
+            )
+            if has_graph:
+                from gnn.dataset import create_kfold_graph_data_loaders
+                graph_fold_loaders = create_kfold_graph_data_loaders(
+                    data_path=data_path,
+                    circuits_dir=circuits_dir,
+                    n_folds=n_folds,
+                    batch_size=batch_size,
+                    seed=seed,
+                )
+            else:
+                graph_fold_loaders = None
+        train_loader = val_loader = graph_train_loader = graph_val_loader = None
+    else:
+        if task == ModelTask.THRESHOLD:
+            train_loader, val_loader = create_threshold_class_data_loaders(
                 data_path=data_path,
                 circuits_dir=circuits_dir,
                 batch_size=batch_size,
                 val_fraction=0.2,
                 seed=seed,
             )
-    else:
-        train_loader, val_loader = create_data_loaders(
-            data_path=data_path,
-            circuits_dir=circuits_dir,
-            batch_size=batch_size,
-            val_fraction=0.2,
-            seed=seed,
-        )
-        graph_train_loader = graph_val_loader = None
+            if has_graph:
+                from gnn.dataset import create_threshold_class_graph_data_loaders
+                graph_train_loader, graph_val_loader = create_threshold_class_graph_data_loaders(
+                    data_path=data_path,
+                    circuits_dir=circuits_dir,
+                    batch_size=batch_size,
+                    val_fraction=0.2,
+                    seed=seed,
+                )
+            else:
+                graph_train_loader = graph_val_loader = None
+        else:
+            train_loader, val_loader = create_data_loaders(
+                data_path=data_path,
+                circuits_dir=circuits_dir,
+                batch_size=batch_size,
+                val_fraction=0.2,
+                seed=seed,
+            )
+            if has_graph:
+                from gnn.dataset import create_graph_data_loaders
+                graph_train_loader, graph_val_loader = create_graph_data_loaders(
+                    data_path=data_path,
+                    circuits_dir=circuits_dir,
+                    batch_size=batch_size,
+                    val_fraction=0.2,
+                    seed=seed,
+                )
+            else:
+                graph_train_loader = graph_val_loader = None
+        tabular_fold_loaders = graph_fold_loaders = None
     
-    print(f"Train batches: {len(train_loader)}")
-    print(f"Val batches: {len(val_loader)}")
+    if not use_kfold:
+        print(f"Train batches: {len(train_loader)}")
+        print(f"Val batches: {len(val_loader)}")
     
     all_results: List[ModelResult] = []
     
@@ -664,44 +837,67 @@ def run_comparison(
         print(f"Type: {'Graph' if model_config['is_graph'] else 'Tabular'}")
         print(f"{'='*60}")
         
-        if model_config["is_graph"]:
-            current_train = graph_train_loader
-            current_val = graph_val_loader
+        if use_kfold:
+            fold_loaders = graph_fold_loaders if model_config["is_graph"] else tabular_fold_loaders
+            for fold in range(n_folds):
+                current_train, current_val = fold_loaders[fold]
+                for run_id_in_fold in range(n_runs):
+                    global_run_id = fold * n_runs + run_id_in_fold
+                    print(f"\n  Fold {fold + 1}/{n_folds}, Run {run_id_in_fold + 1}/{n_runs}")
+                    set_seed(seed + fold * 10000 + run_id_in_fold * 1000)
+                    try:
+                        result = run_single_experiment(
+                            model_name=model_name,
+                            model_config=model_config,
+                            train_loader=current_train,
+                            val_loader=current_val,
+                            task=task,
+                            run_id=global_run_id,
+                            device=device,
+                            verbose=verbose,
+                        )
+                        all_results.append(result)
+                        if task == ModelTask.THRESHOLD:
+                            print(f"    Val Score: {result.val_primary_metric:.4f}")
+                            print(f"    Val Accuracy: {result.val_secondary_metric:.4f}")
+                        else:
+                            print(f"    Val MAE: {result.val_primary_metric:.4f}")
+                        print(f"    Time: {result.train_time_s:.1f}s")
+                    except Exception as e:
+                        print(f"    ERROR: {e}")
+                        import traceback
+                        traceback.print_exc()
         else:
-            current_train = train_loader
-            current_val = val_loader
-        
-        for run_id in range(n_runs):
-            print(f"\n  Run {run_id + 1}/{n_runs}")
-            set_seed(seed + run_id * 1000)
-            
-            try:
-                result = run_single_experiment(
-                    model_name=model_name,
-                    model_config=model_config,
-                    train_loader=current_train,
-                    val_loader=current_val,
-                    task=task,
-                    run_id=run_id,
-                    device=device,
-                    verbose=verbose,
-                )
-                all_results.append(result)
-                
-                if task == ModelTask.THRESHOLD:
-                    print(f"    Val Score: {result.val_primary_metric:.4f}")
-                    print(f"    Val Accuracy: {result.val_secondary_metric:.4f}")
-                    print(f"    Underpred: {result.extra_metrics.get('underpred_rate', 0):.4f}")
-                else:
-                    print(f"    Val MAE: {result.val_primary_metric:.4f}")
-                    print(f"    Val MSE: {result.val_secondary_metric:.4f}")
-                print(f"    Parameters: {result.parameters:,}" if result.parameters > 0 else "    Parameters: N/A")
-                print(f"    Time: {result.train_time_s:.1f}s")
-                
-            except Exception as e:
-                print(f"    ERROR: {e}")
-                import traceback
-                traceback.print_exc()
+            current_train = graph_train_loader if model_config["is_graph"] else train_loader
+            current_val = graph_val_loader if model_config["is_graph"] else val_loader
+            for run_id in range(n_runs):
+                print(f"\n  Run {run_id + 1}/{n_runs}")
+                set_seed(seed + run_id * 1000)
+                try:
+                    result = run_single_experiment(
+                        model_name=model_name,
+                        model_config=model_config,
+                        train_loader=current_train,
+                        val_loader=current_val,
+                        task=task,
+                        run_id=run_id,
+                        device=device,
+                        verbose=verbose,
+                    )
+                    all_results.append(result)
+                    if task == ModelTask.THRESHOLD:
+                        print(f"    Val Score: {result.val_primary_metric:.4f}")
+                        print(f"    Val Accuracy: {result.val_secondary_metric:.4f}")
+                        print(f"    Underpred: {result.extra_metrics.get('underpred_rate', 0):.4f}")
+                    else:
+                        print(f"    Val MAE: {result.val_primary_metric:.4f}")
+                        print(f"    Val MSE: {result.val_secondary_metric:.4f}")
+                    print(f"    Parameters: {result.parameters:,}" if result.parameters > 0 else "    Parameters: N/A")
+                    print(f"    Time: {result.train_time_s:.1f}s")
+                except Exception as e:
+                    print(f"    ERROR: {e}")
+                    import traceback
+                    traceback.print_exc()
     
     aggregated = []
     for model_name in selected_models.keys():
@@ -718,6 +914,7 @@ def run_comparison(
         "task": task.value,
         "suite": suite.value,
         "n_runs": n_runs,
+        "n_folds": n_folds,
         "batch_size": batch_size,
         "device": device,
         "seed": seed,
@@ -788,15 +985,17 @@ def plot_single_metric(
     
     model_names = [r.model_name for r in by_primary]
     is_graph = [r.is_graph for r in by_primary]
-    colors = ['#2ecc71' if g else '#3498db' for g in is_graph]
+    colors = [GRAPH_COLOR if g else TABULAR_COLOR for g in is_graph]
+    has_both_types = any(is_graph) and not all(is_graph)
     x = np.arange(len(model_names))
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
+    n_vals = [max(1, r.n_runs) for r in by_primary]
+
+    fig, ax = plt.subplots(figsize=PLOT_FIGSIZE)
+
     if metric == "primary":
         vals = [r.val_primary_mean for r in by_primary]
-        errs = [r.val_primary_std for r in by_primary]
-        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=0.8)
+        errs = [r.val_primary_std / np.sqrt(n) for r, n in zip(by_primary, n_vals)]
+        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=1.0)
         if task == ModelTask.THRESHOLD:
             ylabel = "Expected Threshold Score"
             default_title = "Validation Score (Higher is Better)"
@@ -807,11 +1006,11 @@ def plot_single_metric(
         
     elif metric == "secondary":
         vals = [r.val_secondary_mean for r in by_primary]
-        errs = [r.val_secondary_std for r in by_primary]
-        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=0.8)
+        errs = [r.val_secondary_std / np.sqrt(n) for r, n in zip(by_primary, n_vals)]
+        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=1.0)
         if task == ModelTask.THRESHOLD:
             ylabel = "Accuracy"
-            default_title = "Validation Accuracy"
+            default_title = "Threshold: Validation Accuracy"
         else:
             ylabel = "MSE"
             default_title = "Validation MSE"
@@ -819,43 +1018,50 @@ def plot_single_metric(
         
     elif metric == "parameters":
         vals = [r.parameters if r.parameters > 0 else 1 for r in by_primary]
-        ax.bar(x, vals, color=colors, alpha=0.8)
+        ax.bar(x, vals, color=colors, alpha=1.0)
         ax.set_ylabel("Parameters")
         ax.set_yscale('log')
         default_title = "Model Size (Parameters)"
         
     elif metric == "time":
         vals = [r.train_time_mean for r in by_primary]
-        ax.bar(x, vals, color=colors, alpha=0.8)
+        ax.bar(x, vals, color=colors, alpha=1.0)
         ax.set_ylabel("Time (seconds)")
         default_title = "Training Time"
         
     elif metric in ("underpred", "underprediction"):
         vals = [r.extra_metrics.get("underpred_rate_mean", 0) for r in by_primary]
-        ax.bar(x, vals, color='#e74c3c', alpha=0.8)
+        ax.bar(x, vals, color=UNDERPRED_COLOR, alpha=1.0)
         ax.set_ylabel("Rate")
         default_title = "Underprediction Rate"
         
     elif metric in ("overpred", "overprediction"):
         vals = [r.extra_metrics.get("overpred_rate_mean", 0) for r in by_primary]
-        ax.bar(x, vals, color='#f39c12', alpha=0.8)
+        ax.bar(x, vals, color=OVERPRED_COLOR, alpha=1.0)
         ax.set_ylabel("Rate")
         default_title = "Overprediction Rate"
         
     else:
         raise ValueError(f"Unknown metric: {metric}")
     
-    ax.set_title(title or default_title)
+    ax.set_title(title or default_title, fontsize=PLOT_TITLE_SIZE)
+    ax.set_ylabel(ax.get_ylabel(), fontsize=PLOT_LABEL_SIZE)
     ax.set_xticks(x)
-    ax.set_xticklabels(model_names, rotation=45, ha='right')
-    ax.grid(axis='y', alpha=0.3)
-    
-    graph_patch = mpatches.Patch(color='#2ecc71', label='Graph-based', alpha=0.8)
-    tabular_patch = mpatches.Patch(color='#3498db', label='Tabular', alpha=0.8)
-    ax.legend(handles=[graph_patch, tabular_patch], loc='best')
-    
+    ax.set_xticklabels(model_names, rotation=45, ha="right", fontsize=PLOT_TICK_SIZE)
+    ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
+    ax.grid(axis="y", alpha=0.3)
+    if has_both_types:
+        ax.legend(
+            handles=[
+                mpatches.Patch(color=GRAPH_COLOR, label="Graph-based"),
+                mpatches.Patch(color=TABULAR_COLOR, label="Tabular"),
+            ],
+            loc="best",
+            fontsize=PLOT_LEGEND_SIZE,
+        )
+
     plt.tight_layout()
-    
+
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {output_path}")
@@ -885,8 +1091,10 @@ def main():
                         help="Model suite to compare")
     parser.add_argument("--models", nargs="+", default=None,
                         help="Specific model names to compare")
-    parser.add_argument("--n-runs", type=int, default=3,
+    parser.add_argument("--n-runs", type=int, default=5,
                         help="Number of runs per model")
+    parser.add_argument("--n-folds", type=int, default=5,
+                        help="Number of folds for k-fold cross-validation (1 = single train/val split)")
     parser.add_argument("--batch-size", type=int, default=16,
                         help="Batch size")
     parser.add_argument("--device", type=str, default="cpu",
@@ -945,6 +1153,7 @@ def main():
         suite=ModelSuite(args.suite),
         model_names=args.models,
         n_runs=args.n_runs,
+        n_folds=args.n_folds,
         batch_size=args.batch_size,
         device=args.device,
         seed=args.seed,

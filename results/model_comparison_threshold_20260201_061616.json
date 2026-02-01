@@ -1,0 +1,245 @@
+{
+  "timestamp": "2026-02-01T06:16:16.414507",
+  "task": "threshold",
+  "suite": "non-graph",
+  "n_runs": 3,
+  "batch_size": 16,
+  "device": "cpu",
+  "seed": 42,
+  "model_names": [
+    "XGBoost",
+    "CatBoost",
+    "LightGBM",
+    "MLP"
+  ],
+  "results": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 1.538874864578247,
+      "parameters": 100,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    },
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 1,
+      "task": "threshold",
+      "train_time_s": 0.41980791091918945,
+      "parameters": 100,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.7857142857142857,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.7142857142857143,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.14285714285714285
+      }
+    },
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 2,
+      "task": "threshold",
+      "train_time_s": 0.4063451290130615,
+      "parameters": 100,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    },
+    {
+      "model_name": "CatBoost",
+      "model_type": "CatBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 0.1763317584991455,
+      "parameters": -1,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    },
+    {
+      "model_name": "CatBoost",
+      "model_type": "CatBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 1,
+      "task": "threshold",
+      "train_time_s": 0.08815217018127441,
+      "parameters": -1,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    },
+    {
+      "model_name": "CatBoost",
+      "model_type": "CatBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 2,
+      "task": "threshold",
+      "train_time_s": 0.08144688606262207,
+      "parameters": -1,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 0.6212153434753418,
+      "parameters": 64393,
+      "epochs_trained": 2,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.7321428571428571,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.07142857142857142,
+        "overpred_rate": 0.35714285714285715
+      }
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "run_id": 1,
+      "task": "threshold",
+      "train_time_s": 0.646824836730957,
+      "parameters": 64393,
+      "epochs_trained": 2,
+      "train_primary_metric": 0.9223050458715596,
+      "val_primary_metric": 0.6830357142857143,
+      "train_secondary_metric": 0.908256880733945,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.0,
+        "overpred_rate": 0.42857142857142855
+      }
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "run_id": 2,
+      "task": "threshold",
+      "train_time_s": 0.4686257839202881,
+      "parameters": 64393,
+      "epochs_trained": 2,
+      "train_primary_metric": 0.955131880733945,
+      "val_primary_metric": 0.6785714285714286,
+      "train_secondary_metric": 0.9541284403669725,
+      "val_secondary_metric": 0.5714285714285714,
+      "extra_metrics": {
+        "underpred_rate": 0.14285714285714285,
+        "overpred_rate": 0.2857142857142857
+      }
+    }
+  ],
+  "aggregated": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "description": "Gradient boosted trees with XGBoost",
+      "task": "threshold",
+      "n_runs": 3,
+      "parameters": 100,
+      "val_primary_mean": 0.7142857142857144,
+      "val_primary_std": 0.05050762722761051,
+      "val_secondary_mean": 0.619047619047619,
+      "val_secondary_std": 0.0673435029701474,
+      "train_time_mean": 0.7883426348368326,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.14285714285714285,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.23809523809523805,
+        "overpred_rate_std": 0.06734350297014738
+      },
+      "rank_by_primary": 1
+    },
+    {
+      "model_name": "CatBoost",
+      "model_type": "CatBoostThresholdClassModel",
+      "is_graph": false,
+      "description": "Gradient boosting with CatBoost (categorical features)",
+      "task": "threshold",
+      "n_runs": 3,
+      "parameters": -1,
+      "val_primary_mean": 0.6785714285714285,
+      "val_primary_std": 1.1102230246251565e-16,
+      "val_secondary_mean": 0.5714285714285714,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 0.11531027158101399,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.14285714285714285,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.2857142857142857,
+        "overpred_rate_std": 0.0
+      },
+      "rank_by_primary": 3
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "description": "Multi-layer perceptron with dropout",
+      "task": "threshold",
+      "n_runs": 3,
+      "parameters": 64393,
+      "val_primary_mean": 0.6979166666666666,
+      "val_primary_std": 0.024270098854613197,
+      "val_secondary_mean": 0.5714285714285714,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 0.5788886547088623,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.07142857142857142,
+        "underpred_rate_std": 0.05832118435198043,
+        "overpred_rate_mean": 0.35714285714285715,
+        "overpred_rate_std": 0.05832118435198042
+      },
+      "rank_by_primary": 2
+    }
+  ],
+  "best_model": "XGBoost"
+}

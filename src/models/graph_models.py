@@ -661,3 +661,387 @@ MODEL_DESCRIPTIONS = {
     "hetero": "Heterogeneous GNN with multi-relation edges and meta-path attention",
     "temporal": "Temporal GNN with causal attention and state memory",
 }
+
+
+class BaseGraphDurationModelWrapper:
+    """Base class for graph-based duration model wrappers."""
+    
+    def __init__(self, config: GraphModelConfig):
+        self.config = config
+        self.model: Optional[nn.Module] = None
+        self.optimizer: Optional[torch.optim.Optimizer] = None
+        self.scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
+        self.history: List[Dict[str, float]] = []
+    
+    @property
+    def name(self) -> str:
+        raise NotImplementedError
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        raise NotImplementedError
+    
+    def _build_model(self, sample_batch) -> None:
+        self.model = self._create_model(sample_batch)
+        self.model = self.model.to(self.config.device)
+        
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+        )
+        
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            min_lr=1e-6,
+        )
+    
+    def _get_augmentation(self):
+        if not self.config.use_augmentation:
+            return None
+        try:
+            from gnn.augmentation import get_train_augmentation
+            return get_train_augmentation(
+                qubit_perm_p=self.config.augmentation_strength,
+                edge_dropout_p=0.1 * self.config.augmentation_strength,
+                feature_noise_std=0.1 * self.config.augmentation_strength,
+                temporal_jitter_std=0.05 * self.config.augmentation_strength,
+            )
+        except ImportError:
+            return None
+    
+    def fit(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        verbose: bool = False,
+        show_progress: bool = True,
+    ) -> Dict[str, Any]:
+        sample_batch = next(iter(train_loader))
+        self._build_model(sample_batch)
+        
+        augmentation = self._get_augmentation()
+        
+        best_val_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+        
+        epoch_iter = range(self.config.epochs)
+        if show_progress:
+            epoch_iter = tqdm(epoch_iter, desc=f"Training {self.name}", leave=False)
+        
+        for epoch in epoch_iter:
+            self.model.train()
+            train_loss = 0.0
+            n_batches = 0
+            
+            for batch in train_loader:
+                if augmentation is not None:
+                    batch = augmentation(batch)
+                batch = batch.to(self.config.device)
+                
+                self.optimizer.zero_grad()
+                predictions = self.model(
+                    batch.x,
+                    batch.edge_index,
+                    batch.edge_attr,
+                    batch.edge_gate_type,
+                    batch.batch,
+                    batch.global_features,
+                )
+                
+                targets = batch.log2_runtime
+                loss = F.mse_loss(predictions, targets)
+                loss.backward()
+                
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
+                
+                train_loss += loss.item()
+                n_batches += 1
+            
+            train_loss /= max(n_batches, 1)
+            
+            val_metrics = self.evaluate(val_loader)
+            val_loss = val_metrics["runtime_mse"]
+            
+            self.scheduler.step(val_loss)
+            
+            self.history.append({
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_mae": val_metrics["runtime_mae"],
+                "val_mse": val_metrics["runtime_mse"],
+            })
+            
+            if show_progress:
+                epoch_iter.set_postfix({
+                    "loss": f"{train_loss:.4f}",
+                    "val_mae": f"{val_metrics['runtime_mae']:.4f}",
+                })
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= self.config.patience:
+                break
+        
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            self.model = self.model.to(self.config.device)
+        
+        return {
+            "history": self.history,
+            "best_val_loss": best_val_loss,
+        }
+    
+    def predict(self, loader: DataLoader) -> np.ndarray:
+        self.model.eval()
+        all_preds = []
+        
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(self.config.device)
+                predictions = self.model(
+                    batch.x,
+                    batch.edge_index,
+                    batch.edge_attr,
+                    batch.edge_gate_type,
+                    batch.batch,
+                    batch.global_features,
+                )
+                all_preds.append(predictions.cpu().numpy())
+        
+        return np.concatenate(all_preds, axis=0)
+    
+    def evaluate(self, loader: DataLoader) -> Dict[str, float]:
+        self.model.eval()
+        all_preds = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(self.config.device)
+                predictions = self.model(
+                    batch.x,
+                    batch.edge_index,
+                    batch.edge_attr,
+                    batch.edge_gate_type,
+                    batch.batch,
+                    batch.global_features,
+                )
+                all_preds.append(predictions.cpu().numpy())
+                all_targets.append(batch.log2_runtime.cpu().numpy())
+        
+        preds = np.concatenate(all_preds, axis=0)
+        targets = np.concatenate(all_targets, axis=0)
+        
+        mae = float(np.mean(np.abs(preds - targets)))
+        mse = float(np.mean((preds - targets) ** 2))
+        
+        return {
+            "runtime_mae": mae,
+            "runtime_mse": mse,
+        }
+    
+    def count_parameters(self) -> int:
+        if self.model is None:
+            return 0
+        return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+
+class BasicGNNDurationModel(BaseGraphDurationModelWrapper):
+    """Basic message-passing GNN for duration prediction."""
+    
+    def __init__(self, config: GraphModelConfig):
+        super().__init__(config)
+    
+    @property
+    def name(self) -> str:
+        return f"BasicGNN-Duration(h={self.config.hidden_dim},L={self.config.num_layers})"
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        from gnn.model import create_gnn_model
+        
+        return create_gnn_model(
+            model_type="basic",
+            node_feat_dim=sample_batch.x.size(-1),
+            edge_feat_dim=sample_batch.edge_attr.size(-1),
+            global_feat_dim=sample_batch.global_features.size(-1),
+            hidden_dim=self.config.hidden_dim,
+            num_layers=self.config.num_layers,
+            dropout=self.config.dropout,
+        )
+
+
+class ImprovedGNNDurationModel(BaseGraphDurationModelWrapper):
+    """Improved GNN with attention for duration prediction."""
+    
+    def __init__(self, config: GraphModelConfig, stochastic_depth: float = 0.1):
+        super().__init__(config)
+        self.stochastic_depth = stochastic_depth
+    
+    @property
+    def name(self) -> str:
+        return f"ImprovedGNN-Duration(h={self.config.hidden_dim},L={self.config.num_layers})"
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        from gnn.improved_model import create_improved_gnn_model
+        
+        return create_improved_gnn_model(
+            model_type="duration",
+            node_feat_dim=sample_batch.x.size(-1),
+            edge_feat_dim=sample_batch.edge_attr.size(-1),
+            global_feat_dim=sample_batch.global_features.size(-1),
+            hidden_dim=self.config.hidden_dim,
+            num_layers=self.config.num_layers,
+            num_heads=self.config.num_heads,
+            dropout=self.config.dropout,
+            stochastic_depth=self.stochastic_depth,
+        )
+
+
+class GraphTransformerDurationModel(BaseGraphDurationModelWrapper):
+    """Graph Transformer for duration prediction."""
+    
+    def __init__(self, config: GraphModelConfig, use_positional_encoding: bool = True):
+        super().__init__(config)
+        self.use_positional_encoding = use_positional_encoding
+    
+    @property
+    def name(self) -> str:
+        return f"GraphTransformer-Duration(h={self.config.hidden_dim},L={self.config.num_layers})"
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        from gnn.transformer import create_graph_transformer_model
+        
+        return create_graph_transformer_model(
+            model_type="duration",
+            node_feat_dim=sample_batch.x.size(-1),
+            edge_feat_dim=sample_batch.edge_attr.size(-1),
+            global_feat_dim=sample_batch.global_features.size(-1),
+            hidden_dim=self.config.hidden_dim,
+            num_layers=self.config.num_layers,
+            num_heads=self.config.num_heads,
+            dropout=self.config.dropout,
+            use_positional_encoding=self.use_positional_encoding,
+        )
+
+
+class HeteroGNNDurationModel(BaseGraphDurationModelWrapper):
+    """Heterogeneous GNN (QCHGT) for duration prediction."""
+    
+    def __init__(self, config: GraphModelConfig):
+        super().__init__(config)
+    
+    @property
+    def name(self) -> str:
+        return f"HeteroGNN-Duration(h={self.config.hidden_dim},L={self.config.num_layers})"
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        from gnn.hetero_gnn import create_hetero_gnn_model
+        
+        return create_hetero_gnn_model(
+            model_type="duration",
+            node_feat_dim=sample_batch.x.size(-1),
+            edge_feat_dim=sample_batch.edge_attr.size(-1),
+            global_feat_dim=sample_batch.global_features.size(-1),
+            hidden_dim=self.config.hidden_dim,
+            num_layers=self.config.num_layers,
+            num_heads=self.config.num_heads,
+            dropout=self.config.dropout,
+        )
+
+
+class TemporalGNNDurationModel(BaseGraphDurationModelWrapper):
+    """Temporal GNN for duration prediction."""
+    
+    def __init__(self, config: GraphModelConfig, use_state_memory: bool = True):
+        super().__init__(config)
+        self.use_state_memory = use_state_memory
+    
+    @property
+    def name(self) -> str:
+        return f"TemporalGNN-Duration(h={self.config.hidden_dim},L={self.config.num_layers})"
+    
+    def _create_model(self, sample_batch) -> nn.Module:
+        from gnn.temporal_model import create_temporal_gnn_model
+        
+        return create_temporal_gnn_model(
+            model_type="duration",
+            node_feat_dim=sample_batch.x.size(-1),
+            edge_feat_dim=sample_batch.edge_attr.size(-1),
+            global_feat_dim=sample_batch.global_features.size(-1),
+            hidden_dim=self.config.hidden_dim,
+            num_layers=self.config.num_layers,
+            num_heads=self.config.num_heads,
+            dropout=self.config.dropout,
+            use_state_memory=self.use_state_memory,
+        )
+
+
+def create_graph_duration_model(
+    model_type: str,
+    hidden_dim: int = 64,
+    num_layers: int = 4,
+    num_heads: int = 4,
+    dropout: float = 0.2,
+    learning_rate: float = 1e-3,
+    weight_decay: float = 1e-4,
+    epochs: int = 100,
+    patience: int = 20,
+    use_augmentation: bool = True,
+    device: Optional[str] = None,
+    **kwargs,
+) -> BaseGraphDurationModelWrapper:
+    """Factory function to create graph-based duration models."""
+    config = GraphModelConfig(
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        dropout=dropout,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        epochs=epochs,
+        patience=patience,
+        use_ordinal=False,
+        use_augmentation=use_augmentation,
+        device=device,
+    )
+    
+    model_classes = {
+        "basic": BasicGNNDurationModel,
+        "improved": ImprovedGNNDurationModel,
+        "transformer": GraphTransformerDurationModel,
+        "hetero": HeteroGNNDurationModel,
+        "temporal": TemporalGNNDurationModel,
+    }
+    
+    if model_type not in model_classes:
+        raise ValueError(f"Unknown model type: {model_type}. Available: {list(model_classes.keys())}")
+    
+    model_class = model_classes[model_type]
+    
+    if model_type == "improved":
+        return model_class(config, stochastic_depth=kwargs.get("stochastic_depth", 0.1))
+    elif model_type == "transformer":
+        return model_class(config, use_positional_encoding=kwargs.get("use_positional_encoding", True))
+    elif model_type == "temporal":
+        return model_class(config, use_state_memory=kwargs.get("use_state_memory", True))
+    else:
+        return model_class(config)
+
+
+DURATION_MODEL_DESCRIPTIONS = {
+    "basic": "Simple message-passing GNN for duration regression",
+    "improved": "Attention-based GNN with stochastic depth for duration regression",
+    "transformer": "Graph Transformer for duration regression",
+    "hetero": "Heterogeneous GNN (QCHGT) for duration regression",
+    "temporal": "Temporal GNN with state memory for duration regression",
+}

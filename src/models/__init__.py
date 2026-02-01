@@ -24,6 +24,8 @@ from .xgboost_threshold_class import XGBoostThresholdClassModel
 from .catboost_model import CatBoostModel
 from .catboost_threshold_class import CatBoostThresholdClassModel
 from .lightgbm_model import LightGBMModel
+from .random_forest_model import RandomForestModel
+from .random_forest_threshold_class import RandomForestThresholdClassModel
 from .gnn_threshold_class import GNNThresholdClassModel
 from .temporal_gnn_model import (
     TemporalGNNDurationModel,
@@ -60,6 +62,9 @@ __all__ = [
     "CatBoostThresholdClassModel",
     # LightGBM
     "LightGBMModel",
+    # Random Forest
+    "RandomForestModel",
+    "RandomForestThresholdClassModel",
     # GNN (legacy wrapper)
     "GNNThresholdClassModel",
     "TemporalGNNDurationModel",

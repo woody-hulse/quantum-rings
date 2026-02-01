@@ -221,6 +221,8 @@ class ThresholdClassGraphDataset(InMemoryDataset):
         val_fraction: float = 0.2,
         seed: int = 42,
         fidelity_target: float = 0.75,
+        fold: Optional[int] = None,
+        n_folds: Optional[int] = None,
         transform=None,
         pre_transform=None,
     ):
@@ -234,9 +236,16 @@ class ThresholdClassGraphDataset(InMemoryDataset):
         circuit_files = sorted(list(set(r["file"] for r in self.all_results)))
         rng = np.random.RandomState(seed)
         rng.shuffle(circuit_files)
-        n_val = int(len(circuit_files) * val_fraction)
-        val_files = set(circuit_files[:n_val])
-        train_files = set(circuit_files[n_val:])
+        if fold is not None and n_folds is not None:
+            fold_size = len(circuit_files) // n_folds
+            start = fold * fold_size
+            end = start + fold_size if fold < n_folds - 1 else len(circuit_files)
+            val_files = set(circuit_files[start:end])
+            train_files = set(circuit_files) - val_files
+        else:
+            n_val = int(len(circuit_files) * val_fraction)
+            val_files = set(circuit_files[:n_val])
+            train_files = set(circuit_files[n_val:])
         if split == "train":
             results = [r for r in self.all_results if r["file"] in train_files]
         else:
@@ -455,6 +464,55 @@ def create_threshold_class_graph_data_loaders(
         num_workers=num_workers,
     )
     return train_loader, val_loader
+
+
+def create_kfold_threshold_class_graph_data_loaders(
+    data_path: Path,
+    circuits_dir: Path,
+    n_folds: int = 5,
+    batch_size: int = 32,
+    num_workers: int = 0,
+    seed: int = 42,
+    fidelity_target: float = 0.75,
+) -> List[Tuple[PyGDataLoader, PyGDataLoader]]:
+    """Create k-fold cross-validation PyG DataLoaders for threshold-class prediction."""
+    fold_loaders = []
+    for fold in range(n_folds):
+        train_dataset = ThresholdClassGraphDataset(
+            data_path=data_path,
+            circuits_dir=circuits_dir,
+            split="train",
+            val_fraction=0.2,
+            seed=seed,
+            fidelity_target=fidelity_target,
+            fold=fold,
+            n_folds=n_folds,
+        )
+        val_dataset = ThresholdClassGraphDataset(
+            data_path=data_path,
+            circuits_dir=circuits_dir,
+            split="val",
+            val_fraction=0.2,
+            seed=seed,
+            fidelity_target=fidelity_target,
+            fold=fold,
+            n_folds=n_folds,
+        )
+        train_loader = PyGDataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            drop_last=True,
+        )
+        val_loader = PyGDataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+        )
+        fold_loaders.append((train_loader, val_loader))
+    return fold_loaders
 
 
 def create_kfold_graph_data_loaders(

@@ -66,6 +66,18 @@ class LightGBMModel(GradientBoostingRegressionModel):
     def _create_regressor(self, **params) -> Any:
         return lgb.LGBMRegressor(**params)
 
+    def _fit_model(
+        self,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+    ) -> None:
+        self.runtime_model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+        )
+
     def save(self, path: Path) -> None:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
