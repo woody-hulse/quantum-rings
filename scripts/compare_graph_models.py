@@ -208,7 +208,7 @@ def run_single_experiment_duration(
     
     augmentation = None
     if config.get("use_augmentation", True):
-        augmentation = get_train_augmentation(strength=config.get("augmentation_strength", 0.5))
+        augmentation = get_train_augmentation()
     
     trainer = GNNTrainer(
         model=model,
