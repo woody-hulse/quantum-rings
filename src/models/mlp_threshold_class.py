@@ -1,5 +1,5 @@
 """
-MLP for duration prediction: threshold as input parameter, predict log2(duration).
+MLP for threshold-class prediction: all features except duration and threshold, output P(class).
 """
 
 from typing import Dict, List, Tuple, Any, Optional
@@ -10,54 +10,43 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 from tqdm import tqdm
 
-from data_loader import THRESHOLD_FEATURE_IDX, get_feature_statistics
-from models.base import BaseModel
+from data_loader import get_feature_statistics, FEATURE_DIM_WITHOUT_THRESHOLD
+from scoring import NUM_THRESHOLD_CLASSES, select_threshold_class_by_expected_score, mean_threshold_score
+from models.base import ThresholdClassBaseModel
+from models.mlp import build_mlp_encoder
 
 
-def build_mlp_encoder(input_dim: int, hidden_dims: List[int], dropout: float) -> nn.Module:
-    """Shared MLP encoder: Linear->ReLU->BN->Dropout repeated. Returns last hidden dim for head."""
-    layers = []
-    prev_dim = input_dim
-    for hidden_dim in hidden_dims:
-        layers.extend([
-            nn.Linear(prev_dim, hidden_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Dropout(dropout),
-        ])
-        prev_dim = hidden_dim
-    return nn.Sequential(*layers), prev_dim
-
-
-class MLPNetwork(nn.Module):
-    """MLP for duration prediction: threshold as input, output log2(duration)."""
+class MLPThresholdClassNetwork(nn.Module):
+    """MLP for threshold-class: encoder + classification head (no duration, no threshold in input)."""
 
     def __init__(
         self,
         input_dim: int,
+        num_classes: int,
         hidden_dims: List[int] = [64, 32],
         dropout: float = 0.1,
     ):
         super().__init__()
         self.encoder, enc_dim = build_mlp_encoder(input_dim, hidden_dims, dropout)
-        self.runtime_head = nn.Linear(enc_dim, 1)
+        self.class_head = nn.Linear(enc_dim, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.encoder(x)
-        return self.runtime_head(features).squeeze(-1)
+        return self.class_head(features)
 
 
-class MLPModel(BaseModel):
+class MLPThresholdClassModel(ThresholdClassBaseModel):
     """
-    MLP for duration prediction: threshold as input parameter, predict log2(duration).
+    MLP for threshold-class prediction: features without duration and threshold, output P(class).
+    Selection at test time by maximum expected threshold score.
     """
 
     def __init__(
         self,
-        input_dim: int,
+        input_dim: int = FEATURE_DIM_WITHOUT_THRESHOLD,
+        num_classes: int = NUM_THRESHOLD_CLASSES,
         hidden_dims: List[int] = [128, 64, 32],
         dropout: float = 0.2,
         lr: float = 1e-3,
@@ -67,6 +56,7 @@ class MLPModel(BaseModel):
         early_stopping_patience: int = 20,
     ):
         self.input_dim = input_dim
+        self.num_classes = num_classes
         self.hidden_dims = hidden_dims
         self.dropout = dropout
         self.lr = lr
@@ -74,9 +64,9 @@ class MLPModel(BaseModel):
         self.device = device
         self.epochs = epochs
         self.early_stopping_patience = early_stopping_patience
-
-        self.network = MLPNetwork(
+        self.network = MLPThresholdClassNetwork(
             input_dim=input_dim,
+            num_classes=num_classes,
             hidden_dims=hidden_dims,
             dropout=dropout,
         ).to(device)
@@ -84,15 +74,15 @@ class MLPModel(BaseModel):
             self.network.parameters(), lr=lr, weight_decay=weight_decay
         )
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.5, patience=10
+            self.optimizer, mode="max", factor=0.5, patience=10
         )
-        self.criterion = nn.L1Loss()
+        self.criterion = nn.CrossEntropyLoss()
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
 
     @property
     def name(self) -> str:
-        return "MLP"
+        return "MLPThresholdClass"
 
     def _set_normalization(self, mean: torch.Tensor, std: torch.Tensor):
         self.feature_mean = mean.to(self.device)
@@ -109,11 +99,11 @@ class MLPModel(BaseModel):
         n_batches = 0
         for batch in train_loader:
             features = batch["features"].to(self.device)
-            log2_runtime = batch["log2_runtime"].to(self.device)
+            target = batch["threshold_class"].to(self.device)
             features = self._normalize(features)
             self.optimizer.zero_grad()
-            log2_pred = self.network(features)
-            loss = self.criterion(log2_pred, log2_runtime)
+            logits = self.network(features)
+            loss = self.criterion(logits, target)
             loss.backward()
             self.optimizer.step()
             total_loss += loss.item()
@@ -129,8 +119,8 @@ class MLPModel(BaseModel):
     ) -> Dict[str, Any]:
         mean, std = get_feature_statistics(train_loader)
         self._set_normalization(mean, std)
-        history = {"train_loss": [], "val_runtime_mae": []}
-        best_val_mae = float("inf")
+        history = {"train_loss": [], "val_threshold_score": []}
+        best_val_score = -1.0
         patience_counter = 0
         best_state = None
         epoch_iter = range(self.epochs)
@@ -139,12 +129,12 @@ class MLPModel(BaseModel):
         for epoch in epoch_iter:
             train_metrics = self._train_epoch(train_loader)
             val_metrics = self.evaluate(val_loader)
-            val_mae = val_metrics["runtime_mae"]
-            self.scheduler.step(val_mae)
+            val_score = val_metrics["expected_threshold_score"]
+            self.scheduler.step(val_score)
             history["train_loss"].append(train_metrics["loss"])
-            history["val_runtime_mae"].append(val_mae)
-            if val_mae < best_val_mae:
-                best_val_mae = val_mae
+            history["val_threshold_score"].append(val_score)
+            if val_score > best_val_score:
+                best_val_score = val_score
                 patience_counter = 0
                 best_state = {k: v.cpu().clone() for k, v in self.network.state_dict().items()}
             else:
@@ -152,10 +142,10 @@ class MLPModel(BaseModel):
             if show_progress:
                 epoch_iter.set_postfix(
                     loss=f"{train_metrics['loss']:.3f}",
-                    val_mae=f"{val_mae:.3f}",
+                    val_score=f"{val_score:.3f}",
                 )
             elif verbose and (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{self.epochs} | Loss: {train_metrics['loss']:.4f} | Val MAE (log2): {val_mae:.4f}")
+                print(f"Epoch {epoch+1}/{self.epochs} | Loss: {train_metrics['loss']:.4f} | Val score: {val_score:.4f}")
             if patience_counter >= self.early_stopping_patience:
                 if show_progress:
                     epoch_iter.close()
@@ -167,31 +157,33 @@ class MLPModel(BaseModel):
     @torch.no_grad()
     def evaluate(self, loader: DataLoader) -> Dict[str, float]:
         self.network.eval()
-        all_pred = []
-        all_label = []
+        all_proba = []
+        all_true = []
         for batch in loader:
             features = batch["features"].to(self.device)
-            log2_runtime = batch["log2_runtime"]
+            target = batch["threshold_class"]
             features = self._normalize(features)
-            log2_pred = self.network(features).cpu()
-            all_pred.extend(log2_pred.tolist())
-            all_label.extend(log2_runtime.tolist())
+            logits = self.network(features).cpu()
+            proba = torch.softmax(logits, dim=-1).numpy()
+            all_proba.append(proba)
+            all_true.extend(target.tolist())
+        proba = np.vstack(all_proba)
+        true_idx = np.array(all_true, dtype=np.int64)
+        chosen = select_threshold_class_by_expected_score(proba)
         return {
-            "runtime_mse": mean_squared_error(all_label, all_pred),
-            "runtime_mae": mean_absolute_error(all_label, all_pred),
+            "threshold_accuracy": float(np.mean(chosen == true_idx)),
+            "expected_threshold_score": mean_threshold_score(chosen, true_idx),
         }
 
     @torch.no_grad()
-    def predict(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_proba(self, features: np.ndarray) -> np.ndarray:
         self.network.eval()
         if isinstance(features, np.ndarray):
             features = torch.tensor(features, dtype=torch.float32)
         features = features.to(self.device)
         features = self._normalize(features)
-        log2_pred = self.network(features).cpu().numpy()
-        runtime_values = np.power(2.0, log2_pred)
-        threshold_values = np.round(np.power(2.0, features.cpu().numpy()[:, THRESHOLD_FEATURE_IDX])).astype(int)
-        return threshold_values, runtime_values
+        logits = self.network(features).cpu()
+        return torch.softmax(logits, dim=-1).numpy()
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -200,12 +192,17 @@ class MLPModel(BaseModel):
             "network_state": self.network.state_dict(),
             "feature_mean": self.feature_mean,
             "feature_std": self.feature_std,
-            "config": {"input_dim": self.input_dim, "hidden_dims": self.hidden_dims, "dropout": self.dropout},
-        }, path / "mlp_model.pt")
+            "config": {
+                "input_dim": self.input_dim,
+                "num_classes": self.num_classes,
+                "hidden_dims": self.hidden_dims,
+                "dropout": self.dropout,
+            },
+        }, path / "mlp_threshold_class.pt")
 
     def load(self, path: Path) -> None:
         path = Path(path)
-        ckpt = torch.load(path / "mlp_model.pt", map_location=self.device)
+        ckpt = torch.load(path / "mlp_threshold_class.pt", map_location=self.device)
         self.network.load_state_dict(ckpt["network_state"])
         self.feature_mean = ckpt["feature_mean"]
         self.feature_std = ckpt["feature_std"]

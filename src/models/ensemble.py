@@ -1,51 +1,23 @@
 """
-Model-agnostic ensemble for threshold classification and runtime regression.
+Model-agnostic ensemble for duration prediction.
 
-Supports two modes for threshold prediction:
-1. Vote-based: Use empirical distribution from member predictions
-2. Logit-based: Average logits/probabilities (only for models that support it)
-
-Both modes support decision-theoretic inference.
+Threshold is an input (pass-through). Runtime predictions are averaged across members.
 """
 
 from typing import Dict, List, Tuple, Any, Optional, Type
 from pathlib import Path
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-from data_loader import THRESHOLD_LADDER
 from models.base import BaseModel
-
-
-def get_score_matrix(num_classes: int = 9) -> np.ndarray:
-    """Build the challenge score matrix."""
-    score_matrix = np.zeros((num_classes, num_classes))
-    for true_idx in range(num_classes):
-        for pred_idx in range(num_classes):
-            if pred_idx < true_idx:
-                score_matrix[true_idx, pred_idx] = 0.0
-            else:
-                steps_over = pred_idx - true_idx
-                score_matrix[true_idx, pred_idx] = 2.0 ** (-steps_over)
-    return score_matrix
 
 
 class EnsembleModel(BaseModel):
     """
-    Model-agnostic ensemble that combines predictions from multiple models.
-
-    For threshold prediction, builds an empirical probability distribution from
-    member predictions and optionally applies decision-theoretic inference.
-
-    For runtime prediction, averages the predictions from all members.
+    Model-agnostic ensemble: threshold is pass-through (input), runtime is averaged.
     """
-
-    INFERENCE_ARGMAX = "argmax"
-    INFERENCE_VOTE = "vote"  # Majority vote (equivalent to argmax on empirical dist)
-    INFERENCE_DECISION_THEORETIC = "decision_theoretic"
 
     def __init__(
         self,
@@ -56,11 +28,8 @@ class EnsembleModel(BaseModel):
         """
         Args:
             models: List of trained models to ensemble
-            inference_strategy: How to combine threshold predictions
-                - "vote": Majority vote among members
-                - "decision_theoretic": Maximize expected score using empirical distribution
-            softmax_temperature: Temperature for softening empirical distribution
-                                 (only used with decision_theoretic)
+            inference_strategy: Unused (kept for API compatibility)
+            softmax_temperature: Unused (kept for API compatibility)
         """
         if len(models) == 0:
             raise ValueError("Ensemble requires at least one model")
@@ -68,8 +37,6 @@ class EnsembleModel(BaseModel):
         self.models = models
         self.inference_strategy = inference_strategy
         self.softmax_temperature = softmax_temperature
-        self.num_classes = len(THRESHOLD_LADDER)
-        self.score_matrix = get_score_matrix(self.num_classes)
 
     @property
     def name(self) -> str:
@@ -82,71 +49,14 @@ class EnsembleModel(BaseModel):
         self,
         features: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Get predictions from all ensemble members.
-
-        Returns:
-            Tuple of:
-                - threshold_preds: (n_members, n_samples) array of threshold class indices
-                - runtime_preds: (n_members, n_samples) array of runtime predictions
-        """
+        """Get (threshold, runtime) from each member. Threshold is input pass-through."""
         all_thresh = []
         all_runtime = []
-
         for model in self.models:
             thresh_values, runtime_values = model.predict(features)
-            # Convert threshold values back to class indices
-            thresh_classes = np.array([
-                THRESHOLD_LADDER.index(t) if t in THRESHOLD_LADDER else 0
-                for t in thresh_values
-            ])
-            all_thresh.append(thresh_classes)
+            all_thresh.append(thresh_values)
             all_runtime.append(runtime_values)
-
         return np.array(all_thresh), np.array(all_runtime)
-
-    def _build_empirical_distribution(
-        self,
-        member_preds: np.ndarray,
-    ) -> np.ndarray:
-        """Build empirical probability distribution from member predictions.
-
-        Args:
-            member_preds: (n_members, n_samples) array of class predictions
-
-        Returns:
-            (n_samples, num_classes) array of empirical probabilities
-        """
-        n_members, n_samples = member_preds.shape
-        probs = np.zeros((n_samples, self.num_classes))
-
-        for i in range(n_samples):
-            for j in range(n_members):
-                pred_class = member_preds[j, i]
-                probs[i, pred_class] += 1.0 / n_members
-
-        return probs
-
-    def _decision_theoretic_predict(
-        self,
-        probs: np.ndarray,
-    ) -> np.ndarray:
-        """Pick classes that maximize expected challenge score.
-
-        Args:
-            probs: (n_samples, num_classes) probability distribution
-
-        Returns:
-            (n_samples,) array of predicted class indices
-        """
-        # Apply temperature softening if not 1.0
-        if self.softmax_temperature != 1.0:
-            log_probs = np.log(probs + 1e-10) / self.softmax_temperature
-            probs = np.exp(log_probs) / np.exp(log_probs).sum(axis=1, keepdims=True)
-
-        # expected_scores[i, j] = expected score if we predict class j for sample i
-        expected_scores = probs @ self.score_matrix
-
-        return expected_scores.argmax(axis=1)
 
     def predict(
         self,
@@ -154,64 +64,23 @@ class EnsembleModel(BaseModel):
         strategy: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Make predictions using the ensemble.
-
-        Args:
-            features: Input features array
-            strategy: Override inference strategy
-
-        Returns:
-            Tuple of (threshold_values, runtime_values)
+        Returns (threshold_values, runtime_values). Threshold from input (first member), runtime = mean of members.
         """
-        strategy = strategy or self.inference_strategy
-
-        # Get all member predictions
         member_thresh, member_runtime = self._get_member_predictions(features)
-
-        # Average runtime predictions
+        thresh_values = member_thresh[0]
         runtime_values = member_runtime.mean(axis=0)
-
-        # Build empirical distribution for threshold
-        probs = self._build_empirical_distribution(member_thresh)
-
-        # Apply inference strategy
-        if strategy == self.INFERENCE_DECISION_THEORETIC:
-            thresh_classes = self._decision_theoretic_predict(probs)
-        else:  # vote / argmax
-            thresh_classes = probs.argmax(axis=1)
-
-        thresh_values = np.array([THRESHOLD_LADDER[c] for c in thresh_classes])
-
         return thresh_values, runtime_values
 
     def predict_with_uncertainty(
         self,
         features: np.ndarray,
     ) -> Dict[str, np.ndarray]:
-        """
-        Make predictions and return uncertainty estimates.
-
-        Returns:
-            Dict with:
-                - threshold_values: Predicted thresholds
-                - runtime_values: Predicted runtimes
-                - threshold_probs: Empirical probability distribution
-                - runtime_std: Standard deviation of runtime predictions
-                - member_agreement: Fraction of members agreeing with majority
-        """
+        """Predict with runtime std across members. Threshold is pass-through."""
         member_thresh, member_runtime = self._get_member_predictions(features)
-
-        probs = self._build_empirical_distribution(member_thresh)
-        thresh_classes = probs.argmax(axis=1)
-        thresh_values = np.array([THRESHOLD_LADDER[c] for c in thresh_classes])
-        runtime_values = member_runtime.mean(axis=0)
-
         return {
-            "threshold_values": thresh_values,
-            "runtime_values": runtime_values,
-            "threshold_probs": probs,
+            "threshold_values": member_thresh[0],
+            "runtime_values": member_runtime.mean(axis=0),
             "runtime_std": member_runtime.std(axis=0),
-            "member_agreement": probs.max(axis=1),
         }
 
     def fit(
@@ -232,30 +101,16 @@ class EnsembleModel(BaseModel):
         loader: DataLoader,
         strategy: Optional[str] = None,
     ) -> Dict[str, float]:
-        """Evaluate the ensemble on a data loader."""
-        all_thresh_preds = []
-        all_thresh_labels = []
+        """Evaluate on a data loader (log2 runtime MSE/MAE)."""
         all_runtime_preds = []
         all_runtime_labels = []
-
         for batch in loader:
             features = batch["features"].numpy()
-            threshold_labels = batch["threshold_class"].tolist()
-            runtime_labels = batch["log_runtime"].numpy()
-
+            log2_runtime = batch["log2_runtime"].numpy()
             thresh_values, runtime_values = self.predict(features, strategy=strategy)
-            thresh_classes = [
-                THRESHOLD_LADDER.index(t) if t in THRESHOLD_LADDER else 0
-                for t in thresh_values
-            ]
-
-            all_thresh_preds.extend(thresh_classes)
-            all_thresh_labels.extend(threshold_labels)
-            all_runtime_preds.extend(np.log1p(runtime_values).tolist())
-            all_runtime_labels.extend(runtime_labels.tolist())
-
+            all_runtime_preds.extend(np.log2(np.maximum(runtime_values, 1e-10)).tolist())
+            all_runtime_labels.extend(log2_runtime.tolist())
         return {
-            "threshold_accuracy": accuracy_score(all_thresh_labels, all_thresh_preds),
             "runtime_mse": mean_squared_error(all_runtime_labels, all_runtime_preds),
             "runtime_mae": mean_absolute_error(all_runtime_labels, all_runtime_preds),
         }

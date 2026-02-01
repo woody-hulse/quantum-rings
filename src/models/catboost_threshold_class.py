@@ -1,5 +1,5 @@
 """
-CatBoost model for duration prediction: threshold as input, log2(duration) target.
+CatBoost for threshold-class prediction: all features except duration and threshold, output P(class).
 """
 
 from typing import Dict, Any
@@ -7,17 +7,18 @@ from pathlib import Path
 
 import numpy as np
 
-from models.gradient_boosting_base import GradientBoostingRegressionModel
+from models.gradient_boosting_base import GradientBoostingClassificationModel
+from scoring import NUM_THRESHOLD_CLASSES
 
 try:
-    from catboost import CatBoostRegressor
+    from catboost import CatBoostClassifier
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
 
 
-class CatBoostModel(GradientBoostingRegressionModel):
-    """CatBoost for duration prediction: threshold as input, log2(duration) target."""
+class CatBoostThresholdClassModel(GradientBoostingClassificationModel):
+    """CatBoost for threshold-class prediction: features without duration and threshold, output P(class)."""
 
     def __init__(
         self,
@@ -40,7 +41,7 @@ class CatBoostModel(GradientBoostingRegressionModel):
 
     @property
     def name(self) -> str:
-        return "CatBoost"
+        return "CatBoostThresholdClass"
 
     def _get_model_params(self) -> Dict[str, Any]:
         return {
@@ -48,14 +49,15 @@ class CatBoostModel(GradientBoostingRegressionModel):
             "learning_rate": self.learning_rate,
             "iterations": self.iterations,
             "l2_leaf_reg": self.l2_leaf_reg,
-            "loss_function": "RMSE",
+            "loss_function": "MultiClass",
+            "classes_count": NUM_THRESHOLD_CLASSES,
             "random_seed": self.random_state,
             "verbose": self.verbose,
             "allow_writing_files": False,
         }
 
-    def _create_regressor(self, **params) -> Any:
-        return CatBoostRegressor(**params)
+    def _create_classifier(self, **params) -> Any:
+        return CatBoostClassifier(**params)
 
     def _fit_model(
         self,
@@ -64,7 +66,20 @@ class CatBoostModel(GradientBoostingRegressionModel):
         X_val: np.ndarray,
         y_val: np.ndarray,
     ) -> None:
-        self.runtime_model.fit(
+        """
+        CatBoost respects classes_count, but add dummy samples for safety
+        to ensure predict_proba always returns (n_samples, 9).
+        """
+        unique_classes = set(y_train)
+        missing_classes = set(range(NUM_THRESHOLD_CLASSES)) - unique_classes
+        
+        if missing_classes:
+            dummy_X = np.zeros((len(missing_classes), X_train.shape[1]))
+            dummy_y = np.array(list(missing_classes), dtype=np.int64)
+            X_train = np.vstack([X_train, dummy_X])
+            y_train = np.concatenate([y_train, dummy_y])
+        
+        self.classifier.fit(
             X_train, y_train,
             eval_set=(X_val, y_val),
             verbose=False,
@@ -73,11 +88,11 @@ class CatBoostModel(GradientBoostingRegressionModel):
     def save(self, path: Path) -> None:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-        self.runtime_model.save_model(str(path / "runtime_model.cbm"))
+        self.classifier.save_model(str(path / "classifier.cbm"))
         self._save_scaler(path)
 
     def load(self, path: Path) -> None:
         path = Path(path)
-        self.runtime_model = CatBoostRegressor()
-        self.runtime_model.load_model(str(path / "runtime_model.cbm"))
+        self.classifier = CatBoostClassifier()
+        self.classifier.load_model(str(path / "classifier.cbm"))
         self._load_scaler(path)

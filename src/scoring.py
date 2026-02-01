@@ -7,6 +7,61 @@ import numpy as np
 
 from data_loader import THRESHOLD_LADDER
 
+NUM_THRESHOLD_CLASSES = len(THRESHOLD_LADDER)
+
+
+def threshold_score_for_pair(pred_idx: int, true_idx: int) -> float:
+    """
+    Threshold-only score: 0 if underprediction, else 2^(-steps_over).
+    pred_idx < true_idx -> 0; else 2^(-(pred_idx - true_idx)).
+    """
+    if pred_idx < true_idx:
+        return 0.0
+    return 2.0 ** (-(pred_idx - true_idx))
+
+
+def threshold_score_matrix() -> np.ndarray:
+    """Shape (num_classes, num_classes): score[pred_idx, true_idx]."""
+    n = NUM_THRESHOLD_CLASSES
+    M = np.zeros((n, n))
+    for c in range(n):
+        for t in range(n):
+            M[c, t] = threshold_score_for_pair(c, t)
+    return M
+
+
+_THRESHOLD_SCORE_MATRIX: np.ndarray | None = None
+
+
+def get_threshold_score_matrix() -> np.ndarray:
+    global _THRESHOLD_SCORE_MATRIX
+    if _THRESHOLD_SCORE_MATRIX is None:
+        _THRESHOLD_SCORE_MATRIX = threshold_score_matrix()
+    return _THRESHOLD_SCORE_MATRIX
+
+
+def expected_score_if_choose(proba: np.ndarray, chosen_idx: int, score_matrix: np.ndarray) -> float:
+    """Expected threshold score for one sample if we choose chosen_idx. proba shape (num_classes,)."""
+    return float(np.dot(score_matrix[chosen_idx], proba))
+
+
+def select_threshold_class_by_expected_score(proba: np.ndarray) -> np.ndarray:
+    """
+    For each sample, choose class that maximizes expected threshold score.
+    proba: (n_samples, num_classes). Returns (n_samples,) class indices.
+    """
+    M = get_threshold_score_matrix()
+    expected_scores = proba @ M.T
+    return np.argmax(expected_scores, axis=1)
+
+
+def mean_threshold_score(pred_class_idx: np.ndarray, true_class_idx: np.ndarray) -> float:
+    """Mean threshold score: 0 if underprediction, else 2^(-steps_over)."""
+    total = 0.0
+    for p, t in zip(pred_class_idx, true_class_idx):
+        total += threshold_score_for_pair(int(p), int(t))
+    return total / len(pred_class_idx) if len(pred_class_idx) else 0.0
+
 
 def compute_challenge_score(
     pred_threshold: np.ndarray,

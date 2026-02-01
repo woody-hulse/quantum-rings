@@ -442,6 +442,118 @@ def plot_threshold_sweep_heatmap(results, circuit_info, save_path):
     print(f"Saved: {save_path}")
 
 
+def plot_mirror_vs_forward_wall_s(results, save_path):
+    """
+    Plot distributions of mirror run_wall_s (per threshold rung) and forward_wall_s (one per result).
+    There is only one forward run per (file, backend, precision), at the selected threshold;
+    forward timing is not provided for every threshold rung.
+    """
+    mirror_wall_s = []
+    for r in results:
+        for entry in r.threshold_sweep:
+            if entry.run_wall_s is not None and entry.run_wall_s > 0:
+                mirror_wall_s.append(entry.run_wall_s)
+    forward_wall_s = [r.forward_wall_s for r in results if r.forward_wall_s is not None and r.forward_wall_s > 0]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    for ax, values, label, color in [
+        (ax1, mirror_wall_s, "Mirror run_wall_s\n(per threshold_sweep entry)", "steelblue"),
+        (ax2, forward_wall_s, "Forward run_wall_s\n(one per result, at selected threshold)", "coral"),
+    ]:
+        if not values:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(label)
+            continue
+        log_vals = np.log10(np.array(values))
+        ax.hist(log_vals, bins=40, edgecolor="black", alpha=0.7, color=color)
+        ax.set_xlabel("Log10(wall time [s])")
+        ax.set_ylabel("Count")
+        ax.set_title(label)
+        med = np.median(log_vals)
+        ax.axvline(med, color="red", linestyle="--", label=f"Median: 10^{med:.2f} s")
+        ax.legend()
+
+    fig.suptitle(
+        "Mirror: one value per threshold rung  |  Forward: one value per result (selected threshold only)",
+        fontsize=10,
+        style="italic",
+    )
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
+def plot_wall_s_vs_circuit_size_and_n_qubits(results, circuit_info, features_cache, save_path):
+    """Scatter mirror/forward run_wall_s vs circuit size and vs n_qubits, with best-fit line and correlation."""
+    mirror_wall_s, mirror_n_qubits, mirror_circuit_size = [], [], []
+    for r in results:
+        info = circuit_info.get(r.file)
+        feats = features_cache.get(r.file, {})
+        nq = info.n_qubits if info else feats.get("n_qubits", 0)
+        depth = feats.get("estimated_depth", 0)
+        for entry in r.threshold_sweep:
+            if entry.run_wall_s is not None and entry.run_wall_s > 0:
+                mirror_wall_s.append(entry.run_wall_s)
+                mirror_n_qubits.append(nq)
+                mirror_circuit_size.append(depth)
+
+    forward_wall_s, forward_n_qubits, forward_circuit_size = [], [], []
+    for r in results:
+        if r.forward_wall_s is None or r.forward_wall_s <= 0:
+            continue
+        info = circuit_info.get(r.file)
+        feats = features_cache.get(r.file, {})
+        nq = info.n_qubits if info else feats.get("n_qubits", 0)
+        depth = feats.get("estimated_depth", 0)
+        forward_wall_s.append(r.forward_wall_s)
+        forward_n_qubits.append(nq)
+        forward_circuit_size.append(depth)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    circuit_size_label = "Circuit size (estimated depth)"
+
+    def add_scatter_and_fit(ax, x_vals, wall_s_vals, color):
+        if not wall_s_vals:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            return
+        x = np.array(x_vals)
+        y_raw = np.array(wall_s_vals)
+        y = np.log10(y_raw)
+        ax.scatter(x, y_raw, alpha=0.3, s=8, c=color)
+        ax.set_yscale("log")
+        valid = np.isfinite(x) & np.isfinite(y)
+        if np.sum(valid) > 1:
+            xv, yv = x[valid], y[valid]
+            r = np.corrcoef(xv, yv)[0, 1]
+            slope, intercept = np.polyfit(xv, yv, 1)
+            x_line = np.linspace(xv.min(), xv.max(), 100)
+            y_line = 10 ** (slope * x_line + intercept)
+            ax.plot(x_line, y_line, "r-", lw=2, label=f"fit, r = {r:.3f}")
+            ax.legend()
+
+    for row, (wall_s, n_qubits, circuit_size, title_prefix, color) in enumerate([
+        (mirror_wall_s, mirror_n_qubits, mirror_circuit_size, "Mirror", "steelblue"),
+        (forward_wall_s, forward_n_qubits, forward_circuit_size, "Forward", "coral"),
+    ]):
+        ax_size, ax_nq = axes[row, 0], axes[row, 1]
+        add_scatter_and_fit(ax_size, circuit_size, wall_s, color)
+        ax_size.set_xlabel(circuit_size_label)
+        ax_size.set_ylabel("Wall time [s]")
+        ax_size.set_title(f"{title_prefix} run_wall_s vs {circuit_size_label}")
+
+        add_scatter_and_fit(ax_nq, n_qubits, wall_s, color)
+        ax_nq.set_xlabel("Number of qubits")
+        ax_nq.set_ylabel("Wall time [s]")
+        ax_nq.set_title(f"{title_prefix} run_wall_s vs n_qubits")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
 def plot_runtime_distribution_histogram(results, save_path):
     """Plot histogram of log runtimes."""
     runtimes = [r.forward_wall_s for r in results if r.forward_wall_s]
@@ -584,7 +696,15 @@ def main():
     
     plot_runtime_distribution_histogram(results,
                                        output_dir / "09_runtime_histogram.png")
-    
+
+    plot_mirror_vs_forward_wall_s(results,
+                                  output_dir / "10_mirror_vs_forward_wall_s.png")
+
+    plot_wall_s_vs_circuit_size_and_n_qubits(
+        results, circuit_info, features_cache,
+        output_dir / "11_wall_s_vs_circuit_size_and_n_qubits.png",
+    )
+
     print("\n" + "=" * 60)
     print(f"All visualizations saved to: {output_dir}")
     print("=" * 60)

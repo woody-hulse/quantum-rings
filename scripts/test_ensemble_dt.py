@@ -30,16 +30,12 @@ def extract_features(loader) -> np.ndarray:
 
 
 def extract_labels(loader) -> tuple:
-    """Extract ground truth labels from a data loader."""
+    """Extract ground truth: threshold (input) and runtime in seconds."""
     all_thresh = []
     all_runtime = []
-
     for batch in loader:
-        thresh_classes = batch["threshold_class"].tolist()
-        thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
-        all_thresh.extend(thresh_values)
-        all_runtime.extend(np.expm1(batch["log_runtime"].numpy()).tolist())
-
+        all_thresh.extend(batch["threshold"])
+        all_runtime.extend(np.power(2.0, batch["log2_runtime"].numpy()).tolist())
     return np.array(all_thresh), np.array(all_runtime)
 
 

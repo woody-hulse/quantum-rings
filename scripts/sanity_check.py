@@ -210,25 +210,25 @@ def test_model_overfit():
     torch.manual_seed(42)
     np.random.seed(42)
     
-    # Create tiny synthetic dataset
+    # Create tiny synthetic dataset for duration prediction
     n_samples = 16
-    input_dim = 10
+    input_dim = 80  # Match feature dimension of real dataset
     
-    # Fixed features
+    # Fixed features including threshold
     X = torch.randn(n_samples, input_dim)
     
-    # Fixed targets - make them learnable patterns
-    threshold_classes = torch.randint(0, len(THRESHOLD_LADDER), (n_samples,))
+    # Fixed targets - log2 of runtime
     runtimes = torch.abs(torch.randn(n_samples) * 5 + 10)  # Positive runtimes
-    log_runtimes = torch.log1p(runtimes)
+    log2_runtimes = torch.log2(runtimes + 1e-10)
+    thresholds = [THRESHOLD_LADDER[torch.randint(0, len(THRESHOLD_LADDER), (1,)).item()] for _ in range(n_samples)]
     
     # Create a simple DataLoader-like structure
     class FakeLoader:
-        def __init__(self, X, thresh, runtime):
+        def __init__(self, X, thresholds, log2_runtime):
             self.data = {
                 "features": X,
-                "threshold_class": thresh,
-                "log_runtime": runtime,
+                "threshold": thresholds,
+                "log2_runtime": log2_runtime,
             }
         
         def __iter__(self):
@@ -237,10 +237,10 @@ def test_model_overfit():
         def __len__(self):
             return 1
     
-    train_loader = FakeLoader(X, threshold_classes, log_runtimes)
+    train_loader = FakeLoader(X, thresholds, log2_runtimes)
     val_loader = train_loader  # Same data for overfitting test
     
-    # Create model with standard loss (easier to overfit than scoring loss)
+    # Create model for duration prediction
     model = MLPModel(
         input_dim=input_dim,
         hidden_dims=[32, 16],  # Smaller network
@@ -248,46 +248,32 @@ def test_model_overfit():
         lr=5e-2,  # Higher learning rate
         epochs=30,
         early_stopping_patience=30,  # Don't stop early
-        use_scoring_loss=False,  # Standard loss is easier to overfit
         device="cpu",
     )
     
     print("\n  Training model to overfit on synthetic data...")
-    model.fit(train_loader, val_loader, verbose=False)
+    model.fit(train_loader, val_loader, verbose=False, show_progress=False)
     
     # Evaluate
     model.network.eval()
     with torch.no_grad():
         features = model._normalize(X.to(model.device))
-        logits, pred_runtime = model.network(features)
-        pred_classes = logits.argmax(dim=1)
+        pred_log2_runtime = model.network(features)
         
-        # Threshold accuracy
-        thresh_acc = (pred_classes == threshold_classes).float().mean().item()
-        
-        # Runtime error
-        runtime_mae = torch.abs(pred_runtime.cpu() - log_runtimes).mean().item()
-        
-        # Challenge score
-        metrics = compute_scoring_metrics(logits.cpu(), pred_runtime.cpu(), threshold_classes, log_runtimes)
+        # Runtime error in log2 space
+        runtime_mse = ((pred_log2_runtime.cpu() - log2_runtimes) ** 2).mean().item()
+        runtime_mae = torch.abs(pred_log2_runtime.cpu() - log2_runtimes).mean().item()
     
     print(f"\n  Results after training:")
-    print(f"    Threshold Accuracy: {thresh_acc:.2%}")
-    print(f"    Runtime MAE (log1p): {runtime_mae:.4f}")
-    print(f"    Challenge Threshold Score: {metrics['threshold_score']:.4f}")
-    print(f"    Challenge Runtime Score: {metrics['runtime_score']:.4f}")
-    print(f"    Challenge Combined Score: {metrics['combined_score']:.4f}")
+    print(f"    Runtime MSE (log2): {runtime_mse:.4f}")
+    print(f"    Runtime MAE (log2): {runtime_mae:.4f}")
     
-    # Should achieve reasonable overfitting
-    thresh_pass = thresh_acc > 0.5  # At least 50% accuracy
-    runtime_pass = metrics['runtime_score'] > 0.3  # Reasonable runtime prediction
-    combined_pass = metrics['combined_score'] > 0.2  # Reasonable combined score
+    # Should achieve reasonable overfitting on synthetic data
+    runtime_pass = runtime_mse < 5.0  # Should fit reasonably well
     
-    all_passed = thresh_pass and runtime_pass and combined_pass
+    all_passed = runtime_pass
     
-    print(f"\n  Threshold overfit (>50%): {'PASS' if thresh_pass else 'FAIL'}")
-    print(f"  Runtime overfit (>0.3): {'PASS' if runtime_pass else 'FAIL'}")
-    print(f"  Combined overfit (>0.2): {'PASS' if combined_pass else 'FAIL'}")
+    print(f"\n  Runtime overfit (MSE<5.0): {'PASS' if runtime_pass else 'FAIL'}")
     
     return all_passed
 

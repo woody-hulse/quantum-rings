@@ -37,11 +37,10 @@ from .graph_builder import (
 
 from .model import (
     QuantumCircuitGNN,
-    QuantumCircuitGNNWithAttention,
+    QuantumCircuitGNNThresholdClass,
     GateTypeMessagePassing,
-    OrdinalRegressionHead,
-    OrdinalRegressionLoss,
     create_gnn_model,
+    create_gnn_threshold_class_model,
 )
 
 from .dataset import (
@@ -49,11 +48,14 @@ from .dataset import (
     LazyQuantumCircuitGraphDataset,
     create_graph_data_loaders,
     create_kfold_graph_data_loaders,
+    create_threshold_class_graph_data_loaders,
     THRESHOLD_LADDER,
     FAMILY_CATEGORIES,
     FAMILY_TO_IDX,
     NUM_FAMILIES,
+    NUM_THRESHOLD_CLASSES,
     GLOBAL_FEAT_DIM,
+    GLOBAL_FEAT_DIM_THRESHOLD_CLASS,
 )
 
 from .augmentation import (
@@ -85,21 +87,23 @@ __all__ = [
     "GATE_TO_IDX",
     # Models
     "QuantumCircuitGNN",
-    "QuantumCircuitGNNWithAttention",
+    "QuantumCircuitGNNThresholdClass",
     "GateTypeMessagePassing",
-    "OrdinalRegressionHead",
-    "OrdinalRegressionLoss",
     "create_gnn_model",
+    "create_gnn_threshold_class_model",
     # Datasets
     "QuantumCircuitGraphDataset",
     "LazyQuantumCircuitGraphDataset",
     "create_graph_data_loaders",
     "create_kfold_graph_data_loaders",
+    "create_threshold_class_graph_data_loaders",
     "THRESHOLD_LADDER",
     "FAMILY_CATEGORIES",
     "FAMILY_TO_IDX",
     "NUM_FAMILIES",
+    "NUM_THRESHOLD_CLASSES",
     "GLOBAL_FEAT_DIM",
+    "GLOBAL_FEAT_DIM_THRESHOLD_CLASS",
     # Augmentation
     "QubitPermutation",
     "EdgeDropout",

@@ -253,7 +253,7 @@ def print_top_results(results: List[Dict], top_k: int = 10):
     print(f"TOP {top_k} CONFIGURATIONS")
     print("=" * 80)
     
-    print(f"\n{'Rank':<5} {'Score':>8} {'Thresh':>8} {'Runtime':>8} | Configuration")
+    print(f"\n{'Rank':<5} {'Score':>8} {'MAE (log2)':>10} | Configuration")
     print("-" * 80)
     
     for i, result in enumerate(sorted_results[:top_k]):
@@ -261,8 +261,8 @@ def print_top_results(results: List[Dict], top_k: int = 10):
         config = result["config"]
         
         score = metrics.get("combined_score", {}).get("mean", 0)
-        thresh = metrics.get("threshold_accuracy", {}).get("mean", 0)
-        runtime = metrics.get("runtime_mae", {}).get("mean", 0)
+        mae = metrics.get("runtime_mae", {}).get("mean", 0)
+        runtime = mae
         
         config_str = (
             f"hd={config['hidden_dim']}, nl={config['num_layers']}, "
@@ -274,7 +274,7 @@ def print_top_results(results: List[Dict], top_k: int = 10):
         if config.get("use_ordinal"):
             config_str += ", ordinal"
         
-        print(f"{i+1:<5} {score:>8.4f} {thresh:>8.4f} {runtime:>8.4f} | {config_str}")
+        print(f"{i+1:<5} {score:>8.4f} {mae:>8.4f} | {config_str}")
     
     print("\n" + "=" * 80)
     

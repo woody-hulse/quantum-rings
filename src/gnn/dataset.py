@@ -27,6 +27,7 @@ from .graph_builder import (
 
 
 THRESHOLD_LADDER = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+NUM_THRESHOLD_CLASSES = len(THRESHOLD_LADDER)
 
 FAMILY_CATEGORIES = [
     "Amplitude_Estimation", "CutBell", "Deutsch_Jozsa", "GHZ", "GraphState",
@@ -43,6 +44,7 @@ class ThresholdSweepEntry:
     threshold: int
     sdk_get_fidelity: Optional[float]
     p_return_zero: Optional[float]
+    run_wall_s: Optional[float] = None
 
 
 def load_hackathon_data(data_path: Path) -> Tuple[Dict, List[Dict]]:
@@ -61,58 +63,51 @@ def load_hackathon_data(data_path: Path) -> Tuple[Dict, List[Dict]]:
     for r in data["results"]:
         if r["status"] != "ok":
             continue
-        
         sweep = []
         for s in r.get("threshold_sweep", []):
             sweep.append(ThresholdSweepEntry(
                 threshold=s["threshold"],
                 sdk_get_fidelity=s.get("sdk_get_fidelity"),
                 p_return_zero=s.get("p_return_zero"),
+                run_wall_s=s.get("run_wall_s"),
             ))
-        
+        selection = r.get("selection", {})
         forward = r.get("forward", {})
-        
         results.append({
             "file": r["file"],
             "backend": r["backend"],
             "precision": r["precision"],
             "threshold_sweep": sweep,
+            "selected_threshold": selection.get("selected_threshold"),
             "forward_wall_s": forward.get("run_wall_s") if forward else None,
         })
-    
     return circuit_info, results
 
 
-def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.75) -> Optional[int]:
-    """Find minimum threshold meeting target fidelity."""
+def _compute_min_threshold(sweep: List, target: float = 0.75):
+    """Find minimum threshold meeting fidelity target. Returns threshold value or None."""
     for entry in sorted(sweep, key=lambda x: x.threshold):
-        fid = entry.sdk_get_fidelity
+        fid = getattr(entry, "sdk_get_fidelity", None)
         if fid is not None and fid >= target:
             return entry.threshold
     return None
 
 
-def get_threshold_class(sweep: List[ThresholdSweepEntry]) -> int:
-    """Get threshold as class index."""
-    min_thresh = compute_min_threshold(sweep, target=0.75)
-    if min_thresh is None:
-        return len(THRESHOLD_LADDER) - 1
-    try:
-        return THRESHOLD_LADDER.index(min_thresh)
-    except ValueError:
-        for i, t in enumerate(THRESHOLD_LADDER):
-            if t >= min_thresh:
-                return i
-        return len(THRESHOLD_LADDER) - 1
+def _threshold_to_class(min_threshold: int) -> int:
+    if min_threshold in THRESHOLD_LADDER:
+        return THRESHOLD_LADDER.index(min_threshold)
+    for i, t in enumerate(THRESHOLD_LADDER):
+        if min_threshold <= t:
+            return i
+    return len(THRESHOLD_LADDER) - 1
 
 
 class QuantumCircuitGraphDataset(InMemoryDataset):
     """
-    PyTorch Geometric InMemoryDataset for quantum circuit graphs.
-    
-    Processes all circuits once and stores them for fast loading.
+    Duration prediction: one sample per result using forward run_wall_s and selected_threshold only (no mirror times).
+    Global features include log2(threshold). Target is log2_runtime.
     """
-    
+
     def __init__(
         self,
         data_path: Path,
@@ -129,48 +124,40 @@ class QuantumCircuitGraphDataset(InMemoryDataset):
         self.split = split
         self.val_fraction = val_fraction
         self.seed = seed
-        
-        # Load raw data before calling super().__init__
         self.circuit_info, self.all_results = load_hackathon_data(self.data_path)
-        
-        # Split by circuit file
+
         circuit_files = sorted(list(set(r["file"] for r in self.all_results)))
         rng = np.random.RandomState(seed)
         rng.shuffle(circuit_files)
-        
         n_val = int(len(circuit_files) * val_fraction)
         val_files = set(circuit_files[:n_val])
         train_files = set(circuit_files[n_val:])
-        
         if split == "train":
             self.results = [r for r in self.all_results if r["file"] in train_files]
         else:
             self.results = [r for r in self.all_results if r["file"] in val_files]
-        
-        # We don't use the caching mechanism - process in memory directly
+
+        self._samples: List[Dict] = []
+        for r in self.results:
+            if r.get("forward_wall_s") is not None and r["forward_wall_s"] > 0 and r.get("selected_threshold") is not None:
+                self._samples.append(r)
+
         super().__init__(root, transform, pre_transform)
-        
-        # Process data
         self._data_list = self._process_data()
-    
+
     def _process_data(self) -> List[Data]:
-        """Process all circuits into PyG Data objects."""
         data_list = []
-        
-        for result in self.results:
+        for result in self._samples:
             file = result["file"]
             backend = result["backend"]
             precision = result["precision"]
-            sweep = result["threshold_sweep"]
-            forward_time = result["forward_wall_s"]
-            
+            threshold = result["selected_threshold"]
             info = self.circuit_info.get(file, {})
             family = info.get("family", "")
-            
+            log2_threshold = np.log2(max(threshold, 1))
             qasm_path = self.circuits_dir / file
             if not qasm_path.exists():
                 continue
-            
             try:
                 graph_dict = build_graph_from_file(
                     qasm_path,
@@ -179,14 +166,114 @@ class QuantumCircuitGraphDataset(InMemoryDataset):
                     family=family,
                     family_to_idx=FAMILY_TO_IDX,
                     num_families=NUM_FAMILIES,
+                    log2_threshold=log2_threshold,
                 )
             except Exception as e:
                 print(f"Error processing {file}: {e}")
                 continue
-            
-            threshold_class = get_threshold_class(sweep)
-            log_runtime = np.log1p(forward_time) if forward_time else 0.0
-            
+            log2_runtime = np.log2(max(float(result["forward_wall_s"]), 1e-10))
+            data = Data(
+                x=graph_dict["x"],
+                edge_index=graph_dict["edge_index"],
+                edge_attr=graph_dict["edge_attr"],
+                edge_gate_type=graph_dict["edge_gate_type"],
+                global_features=graph_dict["global_features"],
+                log2_runtime=torch.tensor(log2_runtime, dtype=torch.float32),
+                file=file,
+                backend=backend,
+                precision=precision,
+                threshold=threshold,
+            )
+            data_list.append(data)
+        return data_list
+
+    def len(self) -> int:
+        return len(self._data_list)
+
+    def get(self, idx: int) -> Data:
+        return self._data_list[idx]
+
+    @property
+    def processed_file_names(self):
+        return []
+
+    @property
+    def raw_file_names(self):
+        return []
+
+
+GLOBAL_FEAT_DIM = GLOBAL_FEAT_DIM_BASE + 1 + NUM_FAMILIES
+GLOBAL_FEAT_DIM_THRESHOLD_CLASS = GLOBAL_FEAT_DIM_BASE + NUM_FAMILIES
+
+
+class ThresholdClassGraphDataset(InMemoryDataset):
+    """
+    Threshold-class prediction: one sample per result.
+    Global features exclude log2(threshold) and duration. Target is threshold_class.
+    """
+
+    def __init__(
+        self,
+        data_path: Path,
+        circuits_dir: Path,
+        root: Optional[str] = None,
+        split: str = "train",
+        val_fraction: float = 0.2,
+        seed: int = 42,
+        fidelity_target: float = 0.75,
+        transform=None,
+        pre_transform=None,
+    ):
+        self.data_path = Path(data_path)
+        self.circuits_dir = Path(circuits_dir)
+        self.split = split
+        self.val_fraction = val_fraction
+        self.seed = seed
+        self.fidelity_target = fidelity_target
+        self.circuit_info, self.all_results = load_hackathon_data(self.data_path)
+        circuit_files = sorted(list(set(r["file"] for r in self.all_results)))
+        rng = np.random.RandomState(seed)
+        rng.shuffle(circuit_files)
+        n_val = int(len(circuit_files) * val_fraction)
+        val_files = set(circuit_files[:n_val])
+        train_files = set(circuit_files[n_val:])
+        if split == "train":
+            results = [r for r in self.all_results if r["file"] in train_files]
+        else:
+            results = [r for r in self.all_results if r["file"] in val_files]
+        self._samples = []
+        for r in results:
+            min_thr = _compute_min_threshold(r["threshold_sweep"], target=self.fidelity_target)
+            if min_thr is not None:
+                self._samples.append(r)
+        super().__init__(root, transform, pre_transform)
+        self._data_list = self._process_data()
+
+    def _process_data(self) -> List[Data]:
+        data_list = []
+        for result in self._samples:
+            file = result["file"]
+            backend = result["backend"]
+            precision = result["precision"]
+            info = self.circuit_info.get(file, {})
+            family = info.get("family", "")
+            qasm_path = self.circuits_dir / file
+            if not qasm_path.exists():
+                continue
+            try:
+                graph_dict = build_graph_from_file(
+                    qasm_path,
+                    backend=backend,
+                    precision=precision,
+                    family=family,
+                    family_to_idx=FAMILY_TO_IDX,
+                    num_families=NUM_FAMILIES,
+                    log2_threshold=None,
+                )
+            except Exception:
+                continue
+            min_thr = _compute_min_threshold(result["threshold_sweep"], target=self.fidelity_target)
+            threshold_class = _threshold_to_class(min_thr)
             data = Data(
                 x=graph_dict["x"],
                 edge_index=graph_dict["edge_index"],
@@ -194,37 +281,31 @@ class QuantumCircuitGraphDataset(InMemoryDataset):
                 edge_gate_type=graph_dict["edge_gate_type"],
                 global_features=graph_dict["global_features"],
                 threshold_class=torch.tensor(threshold_class, dtype=torch.long),
-                log_runtime=torch.tensor(log_runtime, dtype=torch.float32),
                 file=file,
                 backend=backend,
                 precision=precision,
             )
-            
             data_list.append(data)
-        
         return data_list
-    
+
     def len(self) -> int:
         return len(self._data_list)
-    
+
     def get(self, idx: int) -> Data:
         return self._data_list[idx]
-    
+
     @property
     def processed_file_names(self):
-        return []  # We don't save to disk
-    
+        return []
+
     @property
     def raw_file_names(self):
         return []
 
 
 class LazyQuantumCircuitGraphDataset(Dataset):
-    """
-    Lazy-loading dataset that builds graphs on-demand.
-    More memory efficient for large datasets.
-    """
-    
+    """Lazy-loading duration dataset: one sample per result using forward run_wall_s and selected_threshold only."""
+
     def __init__(
         self,
         data_path: Path,
@@ -234,45 +315,40 @@ class LazyQuantumCircuitGraphDataset(Dataset):
         seed: int = 42,
     ):
         super().__init__()
-        
         self.data_path = Path(data_path)
         self.circuits_dir = Path(circuits_dir)
         self.split = split
-        
         self.circuit_info, all_results = load_hackathon_data(self.data_path)
-        
         circuit_files = sorted(list(set(r["file"] for r in all_results)))
         rng = np.random.RandomState(seed)
         rng.shuffle(circuit_files)
-        
         n_val = int(len(circuit_files) * val_fraction)
         val_files = set(circuit_files[:n_val])
         train_files = set(circuit_files[n_val:])
-        
         if split == "train":
-            self.results = [r for r in all_results if r["file"] in train_files]
+            results = [r for r in all_results if r["file"] in train_files]
         else:
-            self.results = [r for r in all_results if r["file"] in val_files]
-        
+            results = [r for r in all_results if r["file"] in val_files]
+        self._samples: List[Dict] = []
+        for r in results:
+            if r.get("forward_wall_s") is not None and r["forward_wall_s"] > 0 and r.get("selected_threshold") is not None:
+                self._samples.append(r)
         self._cache: Dict[int, Data] = {}
-    
+
     def len(self) -> int:
-        return len(self.results)
-    
+        return len(self._samples)
+
     def get(self, idx: int) -> Data:
         if idx in self._cache:
             return self._cache[idx]
-        
-        result = self.results[idx]
+        result = self._samples[idx]
         file = result["file"]
         backend = result["backend"]
         precision = result["precision"]
-        sweep = result["threshold_sweep"]
-        forward_time = result["forward_wall_s"]
-        
+        threshold = result["selected_threshold"]
         info = self.circuit_info.get(file, {})
         family = info.get("family", "")
-        
+        log2_threshold = np.log2(max(threshold, 1))
         qasm_path = self.circuits_dir / file
         graph_dict = build_graph_from_file(
             qasm_path,
@@ -281,24 +357,21 @@ class LazyQuantumCircuitGraphDataset(Dataset):
             family=family,
             family_to_idx=FAMILY_TO_IDX,
             num_families=NUM_FAMILIES,
+            log2_threshold=log2_threshold,
         )
-        
-        threshold_class = get_threshold_class(sweep)
-        log_runtime = np.log1p(forward_time) if forward_time else 0.0
-        
+        log2_runtime = np.log2(max(float(result["forward_wall_s"]), 1e-10))
         data = Data(
             x=graph_dict["x"],
             edge_index=graph_dict["edge_index"],
             edge_attr=graph_dict["edge_attr"],
             edge_gate_type=graph_dict["edge_gate_type"],
             global_features=graph_dict["global_features"],
-            threshold_class=torch.tensor(threshold_class, dtype=torch.long),
-            log_runtime=torch.tensor(log_runtime, dtype=torch.float32),
+            log2_runtime=torch.tensor(log2_runtime, dtype=torch.float32),
             file=file,
             backend=backend,
             precision=precision,
+            threshold=threshold,
         )
-        
         self._cache[idx] = data
         return data
 
@@ -311,7 +384,7 @@ def create_graph_data_loaders(
     num_workers: int = 0,
     seed: int = 42,
 ) -> Tuple[PyGDataLoader, PyGDataLoader]:
-    """Create train and validation PyG DataLoaders."""
+    """Create train and validation PyG DataLoaders. Threshold as input, log2(duration) target."""
     train_dataset = QuantumCircuitGraphDataset(
         data_path=data_path,
         circuits_dir=circuits_dir,
@@ -319,7 +392,6 @@ def create_graph_data_loaders(
         val_fraction=val_fraction,
         seed=seed,
     )
-    
     val_dataset = QuantumCircuitGraphDataset(
         data_path=data_path,
         circuits_dir=circuits_dir,
@@ -327,7 +399,6 @@ def create_graph_data_loaders(
         val_fraction=val_fraction,
         seed=seed,
     )
-    
     train_loader = PyGDataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -335,14 +406,54 @@ def create_graph_data_loaders(
         num_workers=num_workers,
         drop_last=True,
     )
-    
     val_loader = PyGDataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
     )
-    
+    return train_loader, val_loader
+
+
+def create_threshold_class_graph_data_loaders(
+    data_path: Path,
+    circuits_dir: Path,
+    batch_size: int = 32,
+    val_fraction: float = 0.2,
+    num_workers: int = 0,
+    seed: int = 42,
+    fidelity_target: float = 0.75,
+) -> Tuple[PyGDataLoader, PyGDataLoader]:
+    """Create train and validation PyG DataLoaders for threshold-class prediction (no duration, no threshold in features)."""
+    train_dataset = ThresholdClassGraphDataset(
+        data_path=data_path,
+        circuits_dir=circuits_dir,
+        split="train",
+        val_fraction=val_fraction,
+        seed=seed,
+        fidelity_target=fidelity_target,
+    )
+    val_dataset = ThresholdClassGraphDataset(
+        data_path=data_path,
+        circuits_dir=circuits_dir,
+        split="val",
+        val_fraction=val_fraction,
+        seed=seed,
+        fidelity_target=fidelity_target,
+    )
+    train_loader = PyGDataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        drop_last=True,
+    )
+    val_loader = PyGDataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
     return train_loader, val_loader
 
 
@@ -408,24 +519,22 @@ def _process_results(
     circuit_info: Dict,
     circuits_dir: Path,
 ) -> List[Data]:
-    """Process a list of results into PyG Data objects."""
+    """Process results into PyG Data objects (duration: one per result using forward run_wall_s and selected_threshold only)."""
     data_list = []
-    
     for result in results:
+        if result.get("forward_wall_s") is None or result["forward_wall_s"] <= 0 or result.get("selected_threshold") is None:
+            continue
         file = result["file"]
         backend = result["backend"]
         precision = result["precision"]
-        sweep = result["threshold_sweep"]
-        forward_time = result["forward_wall_s"]
-        
+        threshold = result["selected_threshold"]
         info = circuit_info.get(file, {})
         family = info.get("family", "")
-        
         qasm_path = circuits_dir / file
         if not qasm_path.exists():
             continue
-        
         try:
+            log2_threshold = np.log2(max(threshold, 1))
             graph_dict = build_graph_from_file(
                 qasm_path,
                 backend=backend,
@@ -433,33 +542,28 @@ def _process_results(
                 family=family,
                 family_to_idx=FAMILY_TO_IDX,
                 num_families=NUM_FAMILIES,
+                log2_threshold=log2_threshold,
             )
-        except Exception as e:
+        except Exception:
             continue
-        
-        threshold_class = get_threshold_class(sweep)
-        log_runtime = np.log1p(forward_time) if forward_time else 0.0
-        
+        log2_runtime = np.log2(max(float(result["forward_wall_s"]), 1e-10))
         data = Data(
             x=graph_dict["x"],
             edge_index=graph_dict["edge_index"],
             edge_attr=graph_dict["edge_attr"],
             edge_gate_type=graph_dict["edge_gate_type"],
             global_features=graph_dict["global_features"],
-            threshold_class=torch.tensor(threshold_class, dtype=torch.long),
-            log_runtime=torch.tensor(log_runtime, dtype=torch.float32),
+            log2_runtime=torch.tensor(log2_runtime, dtype=torch.float32),
             file=file,
             backend=backend,
             precision=precision,
+            threshold=threshold,
         )
-        
         data_list.append(data)
-    
     return data_list
 
 
-# Constants for external use
-GLOBAL_FEAT_DIM = GLOBAL_FEAT_DIM_BASE + NUM_FAMILIES
+# GLOBAL_FEAT_DIM defined above (duration: base + 1 + num_families)
 
 
 if __name__ == "__main__":
@@ -485,4 +589,4 @@ if __name__ == "__main__":
     print(f"  Edge gate types: {batch.edge_gate_type.shape}")
     print(f"  Global features: {batch.global_features.shape}")
     print(f"  Batch assignment: {batch.batch.shape}")
-    print(f"  Threshold classes: {batch.threshold_class}")
+    print(f"  log2_runtime: {batch.log2_runtime.shape}")

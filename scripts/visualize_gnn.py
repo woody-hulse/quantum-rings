@@ -465,8 +465,7 @@ def train_model(
     )
     
     final_metrics = trainer.evaluate(val_loader)
-    print(f"  Validation accuracy: {final_metrics['threshold_accuracy']:.3f}")
-    print(f"  Validation runtime MSE: {final_metrics['runtime_mse']:.3f}")
+    print(f"  Validation runtime MAE (log2): {final_metrics.get('runtime_mae', 0):.4f}")
     
     return model
 

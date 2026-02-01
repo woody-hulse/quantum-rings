@@ -129,7 +129,6 @@ def test_dataset_creation():
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Val dataset size: {len(val_dataset)}")
     print(f"Feature dimension: {train_dataset.feature_dim}")
-    print(f"Number of threshold classes: {train_dataset.num_threshold_classes}")
     
     assert len(train_dataset) > 0, "Empty train dataset"
     assert len(val_dataset) > 0, "Empty val dataset"
@@ -144,15 +143,14 @@ def test_dataset_creation():
     print(f"\nSample item:")
     print(f"  features shape: {sample['features'].shape}")
     print(f"  features dtype: {sample['features'].dtype}")
-    print(f"  threshold_class: {sample['threshold_class']} (threshold={THRESHOLD_LADDER[sample['threshold_class']]})")
-    print(f"  log_runtime: {sample['log_runtime']:.4f}")
+    print(f"  threshold: {sample['threshold']}")
+    print(f"  log2_runtime: {sample['log2_runtime']:.4f}")
     print(f"  file: {sample['file']}")
     print(f"  backend: {sample['backend']}")
     print(f"  precision: {sample['precision']}")
     
     assert sample['features'].shape[0] == train_dataset.feature_dim
-    assert sample['threshold_class'].dtype == torch.long
-    assert sample['log_runtime'].dtype == torch.float32
+    assert sample['log2_runtime'].dtype == torch.float32
     
     print("\n✓ QuantumCircuitDataset passed")
     return train_dataset, val_dataset
@@ -181,14 +179,14 @@ def test_data_loaders():
     batch = next(iter(train_loader))
     print(f"\nBatch contents:")
     print(f"  features: {batch['features'].shape}")
-    print(f"  threshold_class: {batch['threshold_class'].shape}")
-    print(f"  log_runtime: {batch['log_runtime'].shape}")
+    print(f"  threshold: {batch['threshold']}")
+    print(f"  log2_runtime: {batch['log2_runtime'].shape}")
     print(f"  files: {batch['file']}")
     print(f"  backends: {batch['backend']}")
     print(f"  precisions: {batch['precision']}")
     
     assert batch['features'].shape[0] == 8, "Incorrect batch size"
-    assert batch['threshold_class'].shape[0] == 8, "Incorrect batch size"
+    assert batch['log2_runtime'].shape[0] == 8, "Incorrect batch size"
     
     print("\n✓ create_data_loaders passed")
     return train_loader, val_loader
@@ -245,14 +243,13 @@ def test_threshold_label_distribution():
     threshold_counts = Counter()
     for i in range(len(dataset)):
         item = dataset[i]
-        threshold_counts[item['threshold_class'].item()] += 1
+        threshold_counts[item['threshold']] += 1
     
-    print("Threshold class distribution:")
-    for cls_idx in sorted(threshold_counts.keys()):
-        threshold_val = THRESHOLD_LADDER[cls_idx] if cls_idx < len(THRESHOLD_LADDER) else "?"
-        count = threshold_counts[cls_idx]
+    print("Threshold distribution:")
+    for threshold_val in sorted(threshold_counts.keys()):
+        count = threshold_counts[threshold_val]
         pct = 100 * count / len(dataset)
-        print(f"  Class {cls_idx} (threshold={threshold_val}): {count} ({pct:.1f}%)")
+        print(f"  Threshold={threshold_val}: {count} ({pct:.1f}%)")
     
     print("\n✓ Threshold distribution analysis complete")
 
@@ -274,21 +271,21 @@ def test_runtime_distribution():
         val_fraction=0.0,
     )
     
-    log_runtimes = []
+    log2_runtimes = []
     for i in range(len(dataset)):
         item = dataset[i]
-        log_runtimes.append(item['log_runtime'].item())
+        log2_runtimes.append(item['log2_runtime'].item())
     
-    log_runtimes = np.array(log_runtimes)
+    log2_runtimes = np.array(log2_runtimes)
     
-    print("Log runtime statistics:")
-    print(f"  Min: {log_runtimes.min():.4f}")
-    print(f"  Max: {log_runtimes.max():.4f}")
-    print(f"  Mean: {log_runtimes.mean():.4f}")
-    print(f"  Std: {log_runtimes.std():.4f}")
-    print(f"  Median: {np.median(log_runtimes):.4f}")
+    print("Log2 runtime statistics:")
+    print(f"  Min: {log2_runtimes.min():.4f}")
+    print(f"  Max: {log2_runtimes.max():.4f}")
+    print(f"  Mean: {log2_runtimes.mean():.4f}")
+    print(f"  Std: {log2_runtimes.std():.4f}")
+    print(f"  Median: {np.median(log2_runtimes):.4f}")
     
-    actual_runtimes = np.expm1(log_runtimes)
+    actual_runtimes = np.power(2.0, log2_runtimes)
     print("\nActual runtime statistics (seconds):")
     print(f"  Min: {actual_runtimes.min():.4f}s")
     print(f"  Max: {actual_runtimes.max():.4f}s")
@@ -315,20 +312,19 @@ def test_pytorch_compatibility():
     )
     
     feature_dim = train_loader.dataset.feature_dim
-    num_classes = train_loader.dataset.num_threshold_classes
     
     model = torch.nn.Sequential(
         torch.nn.Linear(feature_dim, 64),
         torch.nn.ReLU(),
         torch.nn.Linear(64, 32),
         torch.nn.ReLU(),
-        torch.nn.Linear(32, num_classes),
+        torch.nn.Linear(32, 1),
     )
     
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
-    print("Running mini training loop (1 epoch)...")
+    print("Running mini training loop (1 epoch) for duration regression...")
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -337,9 +333,9 @@ def test_pytorch_compatibility():
         optimizer.zero_grad()
         
         features = batch['features']
-        targets = batch['threshold_class']
+        targets = batch['log2_runtime']
         
-        outputs = model(features)
+        outputs = model(features).squeeze(-1)
         loss = criterion(outputs, targets)
         
         loss.backward()
@@ -349,26 +345,26 @@ def test_pytorch_compatibility():
         num_batches += 1
     
     avg_loss = total_loss / num_batches
-    print(f"  Average training loss: {avg_loss:.4f}")
+    print(f"  Average training loss (MSE): {avg_loss:.4f}")
     
     print("\nRunning validation loop...")
     model.eval()
-    correct = 0
-    total = 0
+    total_mse = 0.0
+    total_samples = 0
     
     with torch.no_grad():
         for batch in val_loader:
             features = batch['features']
-            targets = batch['threshold_class']
+            targets = batch['log2_runtime']
             
-            outputs = model(features)
-            _, predicted = torch.max(outputs, 1)
+            outputs = model(features).squeeze(-1)
+            mse = ((outputs - targets) ** 2).sum().item()
             
-            total += targets.size(0)
-            correct += (predicted == targets).sum().item()
+            total_samples += targets.size(0)
+            total_mse += mse
     
-    accuracy = 100 * correct / total
-    print(f"  Validation accuracy: {accuracy:.2f}%")
+    avg_mse = total_mse / total_samples
+    print(f"  Validation MSE: {avg_mse:.4f}")
     
     print("\n✓ PyTorch training compatibility verified")
 

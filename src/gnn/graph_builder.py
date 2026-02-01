@@ -107,6 +107,7 @@ def build_graph_from_qasm(
     family_to_idx: Optional[Dict[str, int]] = None,
     num_families: int = 20,
     rich_features: bool = True,
+    log2_threshold: Optional[float] = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Build a graph representation from QASM text.
@@ -307,13 +308,13 @@ def build_graph_from_qasm(
         backend_idx,
         precision_idx,
     ]
-    
+    if log2_threshold is not None:
+        global_feats.append(log2_threshold / 8.0)
     if family and family_to_idx:
         family_onehot = [0.0] * num_families
         if family in family_to_idx:
             family_onehot[family_to_idx[family]] = 1.0
         global_feats.extend(family_onehot)
-    
     global_features = torch.tensor(global_feats, dtype=torch.float32).unsqueeze(0)
     
     return {
@@ -334,11 +335,13 @@ def build_graph_from_file(
     family: Optional[str] = None,
     family_to_idx: Optional[Dict[str, int]] = None,
     num_families: int = 20,
+    log2_threshold: Optional[float] = None,
 ) -> Dict[str, torch.Tensor]:
     """Build graph from a QASM file path."""
     text = qasm_path.read_text(encoding="utf-8")
     return build_graph_from_qasm(
-        text, backend, precision, family, family_to_idx, num_families
+        text, backend, precision, family, family_to_idx, num_families,
+        log2_threshold=log2_threshold,
     )
 
 
