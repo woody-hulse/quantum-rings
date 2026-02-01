@@ -20,6 +20,7 @@ BACKEND_MAP = {"CPU": 0, "GPU": 1}
 PRECISION_MAP = {"single": 0, "double": 1}
 
 
+# input
 @dataclass
 class CircuitInfo:
     file: str
@@ -28,7 +29,7 @@ class CircuitInfo:
     source_name: str = ""
     source_url: str = ""
 
-
+# output subclass
 @dataclass
 class ThresholdSweepEntry:
     threshold: int
@@ -39,7 +40,7 @@ class ThresholdSweepEntry:
     returncode: int
     note: str
 
-
+# output
 @dataclass
 class ResultEntry:
     file: str
@@ -47,7 +48,7 @@ class ResultEntry:
     precision: str
     status: str
     selected_threshold: Optional[int] = None
-    target_fidelity: Optional[float] = None
+    target_fidelity: Optional[float] = None # always 0.75
     threshold_sweep: List[ThresholdSweepEntry] = field(default_factory=list)
     forward_wall_s: Optional[float] = None
     forward_shots: Optional[int] = None
@@ -55,17 +56,19 @@ class ResultEntry:
 
 def _compute_graph_features(qubit_pairs: set, n_qubits: int) -> Dict[str, float]:
     """Compute interaction graph features from 2-qubit gate pairs."""
-    if not qubit_pairs or n_qubits == 0:
+    if not qubit_pairs or n_qubits == 0: # TODO check that these are the right defaults
         return {
             "max_degree": 0,
             "avg_degree": 0.0,
             "degree_entropy": 0.0,
             "n_connected_components": 0,
             "clustering_coeff": 0.0,
+            "max_component_size": 1.0 if n_qubits > 0 else 0.0,
+            "component_entropy": 0.0,
         }
     
-    degree = [0] * n_qubits
-    adjacency = {i: set() for i in range(n_qubits)}
+    degree = [0] * n_qubits # TODO check that we don't want 2^n
+    adjacency = {i: set() for i in range(n_qubits)} # for sets duplicates are removed automatically
     
     for q1, q2 in qubit_pairs:
         if q1 < n_qubits and q2 < n_qubits:
@@ -81,23 +84,40 @@ def _compute_graph_features(qubit_pairs: set, n_qubits: int) -> Dict[str, float]
     degree_counts = degree_counts[degree_counts > 0]
     if len(degree_counts) > 0:
         probs = degree_counts / degree_counts.sum()
-        degree_entropy = -np.sum(probs * np.log2(probs + 1e-10))
+        raw_entropy = -np.sum(probs * np.log2(probs + 1e-10))
+        max_entropy = np.log2(n_qubits) if n_qubits > 1 else 1.0
+        degree_entropy = raw_entropy / max_entropy
     else:
         degree_entropy = 0.0
     
     visited = set()
     n_components = 0
+    max_component_size = 1.0 if n_qubits > 0 else 0.0
+    component_sizes = []
     for start in range(n_qubits):
         if start in visited or not adjacency[start]:
             continue
         n_components += 1
+        component_size = 0
         stack = [start]
         while stack:
             node = stack.pop()
             if node in visited:
                 continue
             visited.add(node)
+            component_size += 1
             stack.extend(adjacency[node] - visited)
+        max_component_size = max(max_component_size, float(component_size))
+        component_sizes.append(component_size)
+    
+    if component_sizes:
+        sizes = np.array(component_sizes, dtype=float)
+        probs = sizes / sizes.sum()
+        raw_comp_entropy = -np.sum(probs * np.log2(probs + 1e-10))
+        max_ent = np.log2(n_qubits) if n_qubits > 1 else 1.0
+        component_entropy = raw_comp_entropy / max_ent
+    else:
+        component_entropy = 0.0
     
     triangles = 0
     triplets = 0
@@ -118,6 +138,8 @@ def _compute_graph_features(qubit_pairs: set, n_qubits: int) -> Dict[str, float]
         "degree_entropy": degree_entropy,
         "n_connected_components": n_components,
         "clustering_coeff": clustering_coeff,
+        "max_component_size": max_component_size,
+        "component_entropy": component_entropy,
     }
 
 
@@ -519,6 +541,62 @@ def _compute_circuit_regularity_features(text: str, n_qubits: int) -> Dict[str, 
     }
 
 
+def _compute_treewidth_features(qubit_pairs: set, n_qubits: int) -> Dict[str, float]:
+    """
+    Estimate treewidth using the Min-Degree heuristic.
+    
+    Treewidth is a key parameter for tensor network contraction complexity.
+    Exact computation is NP-hard, so we compute an upper bound using
+    the Min-Degree elimination ordering heuristic.
+    """
+    if n_qubits == 0:
+        return {"treewidth_min_degree": 0.0}
+    
+    # Build adjacency list
+    adj = {i: set() for i in range(n_qubits)}
+    for q1, q2 in qubit_pairs:
+        if q1 < n_qubits and q2 < n_qubits:
+            adj[q1].add(q2)
+            adj[q2].add(q1)
+            
+    max_degree_at_elimination = 0
+    active_nodes = set(range(n_qubits))
+    
+    # Greedy elimination
+    for _ in range(n_qubits):
+        # Find node with min degree
+        min_deg = n_qubits + 1
+        node_to_eliminate = -1
+        
+        for node in active_nodes:
+            deg = len(adj[node])
+            if deg < min_deg:
+                min_deg = deg
+                node_to_eliminate = node
+        
+        if node_to_eliminate == -1:
+            break
+            
+        max_degree_at_elimination = max(max_degree_at_elimination, min_deg)
+        
+        # Add fill-in edges (clique on neighbors)
+        neighbors = list(adj[node_to_eliminate])
+        for i in range(len(neighbors)):
+            u = neighbors[i]
+            for j in range(i + 1, len(neighbors)):
+                v = neighbors[j]
+                if v not in adj[u]:
+                    adj[u].add(v)
+                    adj[v].add(u)
+        
+        # Remove node
+        active_nodes.remove(node_to_eliminate)
+        for u in neighbors:
+            adj[u].remove(node_to_eliminate)
+            
+    return {"treewidth_min_degree": float(max_degree_at_elimination)}
+
+
 def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
     """Extract features from a QASM file for model input."""
     if not qasm_path.exists():
@@ -600,6 +678,7 @@ def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
     lightcone_features = _compute_light_cone_features(all_2q_ops, n_qubits)
     structure_features = _compute_entanglement_structure_features(all_2q_ops, n_qubits)
     regularity_features = _compute_circuit_regularity_features(text, n_qubits)
+    treewidth_features = _compute_treewidth_features(qubit_pairs, n_qubits)
     
     return {
         "n_lines": non_empty_lines,
@@ -634,6 +713,7 @@ def extract_qasm_features(qasm_path: Path) -> Dict[str, Any]:
         **lightcone_features,
         **structure_features,
         **regularity_features,
+        **treewidth_features,
     }
 
 
@@ -684,7 +764,7 @@ def load_hackathon_data(data_path: Path) -> Tuple[List[CircuitInfo], List[Result
     return circuits, results
 
 
-def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.99) -> Optional[int]:
+def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.75) -> Optional[int]:
     """Find the minimum threshold that meets the target fidelity."""
     for entry in sorted(sweep, key=lambda x: x.threshold):
         fid = entry.sdk_get_fidelity
@@ -758,7 +838,7 @@ class QuantumCircuitDataset(Dataset):
     
     def _get_threshold_label(self, result: ResultEntry) -> int:
         """Get the minimum threshold meeting fidelity target as a class index."""
-        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.99)
+        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.75)
         if min_thresh is None:
             return len(THRESHOLD_LADDER) - 1
         try:
@@ -780,7 +860,7 @@ class QuantumCircuitDataset(Dataset):
         "gate_density", "gate_ratio_2q",
         # Graph structure
         "max_degree", "avg_degree", "degree_entropy",
-        "n_connected_components", "clustering_coeff",
+        "n_connected_components", "clustering_coeff", "max_component_size", "component_entropy",
         # Depth
         "estimated_depth", "depth_per_qubit",
         # Cut features
@@ -803,6 +883,8 @@ class QuantumCircuitDataset(Dataset):
         "span_gini_coefficient", "weighted_span_sum",
         # Circuit regularity
         "pattern_repetition_score", "barrier_regularity", "layer_uniformity",
+        # Treewidth
+        "treewidth_min_degree",
     ]
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -925,7 +1007,6 @@ def create_data_loaders(
         num_workers=num_workers,
         collate_fn=collate_fn,
         generator=train_generator,
-        drop_last=True,  # Avoid batch size 1 which breaks BatchNorm
     )
     
     val_loader = DataLoader(
@@ -1026,7 +1107,7 @@ class KFoldQuantumCircuitDataset(Dataset):
     
     def _get_threshold_label(self, result: ResultEntry) -> int:
         """Get the minimum threshold meeting fidelity target as a class index."""
-        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.99)
+        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.75)
         if min_thresh is None:
             return len(THRESHOLD_LADDER) - 1
         try:
@@ -1122,7 +1203,6 @@ def create_kfold_data_loaders(
             num_workers=num_workers,
             collate_fn=collate_fn,
             generator=train_generator,
-            drop_last=True,  # Avoid batch size 1 which breaks BatchNorm
         )
         
         val_loader = DataLoader(

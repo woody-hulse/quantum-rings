@@ -24,6 +24,7 @@ from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
 from models.catboost_model import CatBoostModel
 from models.lightgbm_model import LightGBMModel
+from models.hierarchical import HierarchicalDecoupledModel
 from scoring import compute_challenge_score
 
 
@@ -32,6 +33,8 @@ AVAILABLE_MODELS = {
     "xgboost": XGBoostModel,
     "catboost": CatBoostModel,
     "lightgbm": LightGBMModel,
+    "hierarchical": HierarchicalDecoupledModel,
+    
 }
 
 
@@ -162,6 +165,10 @@ def create_model(
             random_state=seed,
             verbose=-1,
         )
+    elif model_class == HierarchicalDecoupledModel:
+        return HierarchicalDecoupledModel(
+            conservative_mode=kwargs.get("conservative_mode", True)
+        )
     else:
         raise ValueError(f"Unknown model class: {model_class}")
 
@@ -195,7 +202,7 @@ def run_single_evaluation(
     true_thresh, true_runtime = extract_labels(val_loader)
     
     challenge_scores = compute_challenge_score(
-        pred_thresh, true_thresh, pred_runtime, true_runtime
+        pred_thresh, true_thresh, pred_runtime, true_runtime, validate=True
     )
     
     result = {

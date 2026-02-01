@@ -303,7 +303,7 @@ def run_single_evaluation(
     true_thresh, true_runtime = extract_labels(val_loader)
     
     challenge_scores = compute_challenge_score(
-        pred_thresh, true_thresh, pred_runtime, true_runtime
+        pred_thresh, true_thresh, pred_runtime, true_runtime, validate=True
     )
     
     return {
