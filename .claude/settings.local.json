@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(PYTHONPATH=src python -c:*)",
+      "Bash(wc:*)"
+    ]
+  }
+}

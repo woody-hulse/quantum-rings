@@ -42,7 +42,11 @@ from scoring import compute_challenge_score
 
 class GNNTrainer:
     """Trainer class for the Quantum Circuit GNN."""
-    
+
+    # Inference strategies
+    INFERENCE_ARGMAX = "argmax"
+    INFERENCE_DECISION_THEORETIC = "decision_theoretic"
+
     def __init__(
         self,
         model: nn.Module,
@@ -53,6 +57,7 @@ class GNNTrainer:
         runtime_weight: float = 1.0,
         use_ordinal: bool = True,
         augmentation: Optional[Callable] = None,
+        inference_strategy: str = "argmax",
     ):
         self.model = model.to(device)
         self.device = device
@@ -60,19 +65,50 @@ class GNNTrainer:
         self.runtime_weight = runtime_weight
         self.use_ordinal = use_ordinal
         self.augmentation = augmentation
-        
+        self.inference_strategy = inference_strategy
+
         self.optimizer = optim.AdamW(
             model.parameters(), lr=lr, weight_decay=weight_decay
         )
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
         )
-        
+
         if use_ordinal:
             self.threshold_criterion = OrdinalRegressionLoss(num_classes=9)
         else:
             self.threshold_criterion = nn.CrossEntropyLoss()
         self.runtime_criterion = nn.HuberLoss(delta=1.0)  # More robust than MSE
+
+        # Precompute score matrix for decision-theoretic inference
+        num_classes = len(THRESHOLD_LADDER)
+        score_matrix = torch.zeros(num_classes, num_classes)
+        for true_idx in range(num_classes):
+            for pred_idx in range(num_classes):
+                if pred_idx < true_idx:
+                    score_matrix[true_idx, pred_idx] = 0.0
+                else:
+                    steps_over = pred_idx - true_idx
+                    score_matrix[true_idx, pred_idx] = 2.0 ** (-steps_over)
+        self.score_matrix = score_matrix.to(device)
+
+    def _decision_theoretic_predict(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Pick the class that maximizes expected challenge score.
+
+        For each possible prediction, compute:
+            E[score | pred] = sum over true classes of P(true) * score(pred, true)
+        """
+        if self.use_ordinal:
+            # Convert ordinal logits to class probabilities
+            probs = self.model.threshold_head.to_class_probs(logits)
+        else:
+            probs = torch.softmax(logits, dim=1)
+
+        # expected_scores[i, j] = expected score if we predict class j for sample i
+        expected_scores = probs @ self.score_matrix
+
+        return expected_scores.argmax(dim=1)
     
     def train_epoch(self, loader: PyGDataLoader) -> Dict[str, float]:
         """Train for one epoch with optional augmentation."""
@@ -162,16 +198,27 @@ class GNNTrainer:
         }
     
     @torch.no_grad()
-    def predict(self, loader: PyGDataLoader) -> Tuple[np.ndarray, np.ndarray]:
-        """Get predictions for computing challenge scores."""
+    def predict(
+        self,
+        loader: PyGDataLoader,
+        strategy: Optional[str] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get predictions for computing challenge scores.
+
+        Args:
+            loader: Data loader
+            strategy: Inference strategy override ("argmax" or "decision_theoretic")
+        """
         self.model.eval()
-        
+        strategy = strategy or self.inference_strategy
+
         all_thresh_values = []
         all_runtime_values = []
-        
+
         for batch in loader:
             batch = batch.to(self.device)
-            
+
             threshold_logits, runtime_pred = self.model(
                 x=batch.x,
                 edge_index=batch.edge_index,
@@ -180,15 +227,20 @@ class GNNTrainer:
                 batch=batch.batch,
                 global_features=batch.global_features,
             )
-            
-            # Use model's prediction method to handle ordinal vs standard
-            thresh_classes = self.model.predict_threshold_class(threshold_logits).cpu().numpy()
+
+            # Use configured inference strategy
+            if strategy == self.INFERENCE_DECISION_THEORETIC:
+                thresh_classes = self._decision_theoretic_predict(threshold_logits).cpu().numpy()
+            else:
+                # Use model's prediction method to handle ordinal vs standard
+                thresh_classes = self.model.predict_threshold_class(threshold_logits).cpu().numpy()
+
             thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
             runtime_values = np.expm1(runtime_pred.cpu().numpy())
-            
+
             all_thresh_values.extend(thresh_values)
             all_runtime_values.extend(runtime_values)
-        
+
         return np.array(all_thresh_values), np.array(all_runtime_values)
     
     def fit(
@@ -301,14 +353,16 @@ def run_single_evaluation(
     use_ordinal: bool = True,
     use_augmentation: bool = True,
     augmentation_strength: float = 0.5,
+    inference_strategy: str = "argmax",
 ) -> Dict[str, Any]:
     """
     Train and evaluate a single GNN model.
-    
+
     Args:
         use_ordinal: Use ordinal regression for threshold prediction
         use_augmentation: Apply data augmentation during training
         augmentation_strength: Controls augmentation intensity (0.0 to 1.0)
+        inference_strategy: "argmax" or "decision_theoretic"
     """
     model = create_gnn_model(
         model_type=model_type,
@@ -320,7 +374,7 @@ def run_single_evaluation(
         dropout=dropout,
         use_ordinal=use_ordinal,
     )
-    
+
     # Create augmentation if enabled
     augmentation = None
     if use_augmentation:
@@ -330,7 +384,7 @@ def run_single_evaluation(
             feature_noise_std=0.1 * augmentation_strength,
             temporal_jitter_std=0.05 * augmentation_strength,
         )
-    
+
     trainer = GNNTrainer(
         model=model,
         device=device,
@@ -338,6 +392,7 @@ def run_single_evaluation(
         weight_decay=weight_decay,
         use_ordinal=use_ordinal,
         augmentation=augmentation,
+        inference_strategy=inference_strategy,
     )
     
     start_time = time.time()
@@ -511,6 +566,9 @@ def main():
                         help="Disable data augmentation")
     parser.add_argument("--aug-strength", type=float, default=0.5,
                         help="Augmentation strength 0-1 (default: 0.5)")
+    parser.add_argument("--inference-strategy", type=str, default="argmax",
+                        choices=["argmax", "decision_theoretic"],
+                        help="Inference strategy for threshold prediction (default: argmax)")
     
     # Evaluation
     parser.add_argument("--n-runs", type=int, default=10,
@@ -554,6 +612,7 @@ def main():
     print(f"  Data augmentation: {use_augmentation}")
     if use_augmentation:
         print(f"  Augmentation strength: {args.aug_strength}")
+    print(f"  Inference strategy: {args.inference_strategy}")
     print(f"  Number of runs: {args.n_runs}")
     print(f"  Device: {args.device}")
     
@@ -596,9 +655,10 @@ def main():
                     use_ordinal=use_ordinal,
                     use_augmentation=use_augmentation,
                     augmentation_strength=args.aug_strength,
+                    inference_strategy=args.inference_strategy,
                 )
                 all_results.append(result)
-        
+
         aggregated = aggregate_metrics(all_results)
         output = {
             "model": "GNN",
@@ -607,10 +667,10 @@ def main():
             "n_runs": len(all_results),
             "aggregated_metrics": aggregated,
         }
-    
+
     else:
         print(f"  Validation fraction: {args.val_fraction}")
-        
+
         set_all_seeds(args.seed)
         train_loader, val_loader = create_graph_data_loaders(
             data_path=data_path,
@@ -619,17 +679,17 @@ def main():
             val_fraction=args.val_fraction,
             seed=args.seed,
         )
-        
+
         print(f"\nDataset info:")
         print(f"  Train samples: {len(train_loader.dataset)}")
         print(f"  Val samples: {len(val_loader.dataset)}")
-        
+
         all_results = []
         for i in range(args.n_runs):
             print(f"\nRun {i + 1}/{args.n_runs}")
             seed = args.seed + i
             set_all_seeds(seed)
-            
+
             result = run_single_evaluation(
                 train_loader=train_loader,
                 val_loader=val_loader,
@@ -645,6 +705,7 @@ def main():
                 use_ordinal=use_ordinal,
                 use_augmentation=use_augmentation,
                 augmentation_strength=args.aug_strength,
+                inference_strategy=args.inference_strategy,
             )
             all_results.append(result)
         

@@ -48,7 +48,7 @@ class ResultEntry:
     precision: str
     status: str
     selected_threshold: Optional[int] = None
-    target_fidelity: Optional[float] = None # always 0.99
+    target_fidelity: Optional[float] = None # always 0.75
     threshold_sweep: List[ThresholdSweepEntry] = field(default_factory=list)
     forward_wall_s: Optional[float] = None
     forward_shots: Optional[int] = None
@@ -764,7 +764,7 @@ def load_hackathon_data(data_path: Path) -> Tuple[List[CircuitInfo], List[Result
     return circuits, results
 
 
-def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.99) -> Optional[int]:
+def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.75) -> Optional[int]:
     """Find the minimum threshold that meets the target fidelity."""
     for entry in sorted(sweep, key=lambda x: x.threshold):
         fid = entry.sdk_get_fidelity
@@ -838,7 +838,7 @@ class QuantumCircuitDataset(Dataset):
     
     def _get_threshold_label(self, result: ResultEntry) -> int:
         """Get the minimum threshold meeting fidelity target as a class index."""
-        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.99)
+        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.75)
         if min_thresh is None:
             return len(THRESHOLD_LADDER) - 1
         try:
@@ -1107,7 +1107,7 @@ class KFoldQuantumCircuitDataset(Dataset):
     
     def _get_threshold_label(self, result: ResultEntry) -> int:
         """Get the minimum threshold meeting fidelity target as a class index."""
-        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.99)
+        min_thresh = compute_min_threshold(result.threshold_sweep, target=0.75)
         if min_thresh is None:
             return len(THRESHOLD_LADDER) - 1
         try:

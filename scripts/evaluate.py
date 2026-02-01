@@ -134,6 +134,8 @@ def create_model(
             threshold_weight=kwargs.get("threshold_weight", 1.0),
             runtime_weight=kwargs.get("runtime_weight", 1.0),
             temperature=kwargs.get("temperature", 1.0),
+            inference_strategy=kwargs.get("inference_strategy", "argmax"),
+            inference_shift=kwargs.get("inference_shift", 0),
         )
     elif model_class == MLPContinuousModel:
         return MLPContinuousModel(
@@ -523,6 +525,13 @@ def main():
                         help="Weight for threshold loss component (default: 1.0)")
     parser.add_argument("--runtime-weight", type=float, default=1.0,
                         help="Weight for runtime loss component (default: 1.0)")
+    parser.add_argument("--inference-strategy", type=str, default="argmax",
+                        choices=["argmax", "decision_theoretic", "shift"],
+                        help="Inference strategy for threshold prediction (default: argmax). "
+                             "'decision_theoretic' maximizes expected challenge score, "
+                             "'shift' adds a constant offset to argmax predictions.")
+    parser.add_argument("--inference-shift", type=int, default=1,
+                        help="Number of classes to shift up (only used with --inference-strategy shift, default: 1)")
     args = parser.parse_args()
     
     project_root = Path(__file__).parent.parent
@@ -560,6 +569,12 @@ def main():
         print(f"  Loss: Challenge-aligned scoring loss (multiplicative)")
     else:
         print(f"  Loss: Standard (CrossEntropy + MSE)")
+    if args.inference_strategy == "decision_theoretic":
+        print(f"  Inference: Decision-theoretic (maximize expected score)")
+    elif args.inference_strategy == "shift":
+        print(f"  Inference: Shift (argmax + {args.inference_shift})")
+    else:
+        print(f"  Inference: Argmax")
     
     # Set global seeds for reproducibility
     set_all_seeds(args.seed)
@@ -592,6 +607,8 @@ def main():
         "underprediction_penalty": args.underprediction_penalty,
         "threshold_weight": args.threshold_weight,
         "runtime_weight": args.runtime_weight,
+        "inference_strategy": args.inference_strategy,
+        "inference_shift": args.inference_shift,
     }
     
     if use_kfold:

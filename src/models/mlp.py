@@ -184,11 +184,21 @@ class MLPNetwork(nn.Module):
 class MLPModel(BaseModel):
     """
     MLP model for threshold classification and runtime regression.
-    
+
     - Threshold: Scoring-aligned loss that directly optimizes challenge score
     - Runtime: MAE loss in log1p space
+
+    Inference strategies:
+    - "argmax": Standard argmax on logits (default)
+    - "decision_theoretic": Pick class with highest expected challenge score
+    - "shift": Argmax + constant shift upward
     """
-    
+
+    # Inference strategy constants
+    INFERENCE_ARGMAX = "argmax"
+    INFERENCE_DECISION_THEORETIC = "decision_theoretic"
+    INFERENCE_SHIFT = "shift"
+
     def __init__(
         self,
         input_dim: int,
@@ -202,12 +212,19 @@ class MLPModel(BaseModel):
         threshold_weight: float = 1.0,
         runtime_weight: float = 1.0,
         temperature: float = 1.0,
+        inference_strategy: str = "argmax",
+        inference_shift: int = 0,
     ):
         """
         Args:
             temperature: Controls softmax temperature for threshold loss (default 1.0)
                          Lower = sharper predictions
                          Higher = softer predictions, may help avoid underprediction
+            inference_strategy: How to convert logits to predictions at inference time
+                - "argmax": Standard argmax (default)
+                - "decision_theoretic": Maximize expected challenge score
+                - "shift": Argmax + constant shift
+            inference_shift: Number of classes to shift up (only used with "shift" strategy)
         """
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -220,29 +237,44 @@ class MLPModel(BaseModel):
         self.threshold_weight = threshold_weight
         self.runtime_weight = runtime_weight
         self.temperature = temperature
-        
+        self.inference_strategy = inference_strategy
+        self.inference_shift = inference_shift
+
         self.network = MLPNetwork(
             input_dim=input_dim,
             hidden_dims=hidden_dims,
             num_threshold_classes=len(THRESHOLD_LADDER),
             dropout=dropout,
         ).to(device)
-        
+
         self.optimizer = optim.AdamW(
             self.network.parameters(), lr=lr, weight_decay=weight_decay
         )
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=10
         )
-        
+
         self.threshold_criterion = ScoringAlignedLoss(
             num_classes=len(THRESHOLD_LADDER),
             temperature=temperature,
         ).to(device)
         self.runtime_criterion = nn.L1Loss()
-        
+
         self.feature_mean: Optional[torch.Tensor] = None
         self.feature_std: Optional[torch.Tensor] = None
+
+        # Precompute score matrix for decision-theoretic inference
+        # score_matrix[true_class, pred_class] = challenge score
+        num_classes = len(THRESHOLD_LADDER)
+        score_matrix = torch.zeros(num_classes, num_classes)
+        for true_idx in range(num_classes):
+            for pred_idx in range(num_classes):
+                if pred_idx < true_idx:
+                    score_matrix[true_idx, pred_idx] = 0.0
+                else:
+                    steps_over = pred_idx - true_idx
+                    score_matrix[true_idx, pred_idx] = 2.0 ** (-steps_over)
+        self.score_matrix = score_matrix.to(device)
     
     @property
     def name(self) -> str:
@@ -364,30 +396,78 @@ class MLPModel(BaseModel):
         
         return {"history": history}
     
+    def _decision_theoretic_predict(self, logits: torch.Tensor) -> np.ndarray:
+        """
+        Pick the class that maximizes expected challenge score.
+
+        For each possible prediction, compute:
+            E[score | pred] = sum over true classes of P(true) * score(pred, true)
+
+        The score(pred, true) = 2^(-(pred - true)) if pred >= true, else 0.
+
+        This naturally biases toward safe overprediction when the model is uncertain,
+        because underprediction gives score=0 while overprediction decays gracefully.
+        """
+        probs = F.softmax(logits, dim=1)  # (batch, num_classes)
+
+        # expected_scores[i, j] = expected score if we predict class j for sample i
+        # = sum over k of: probs[i, k] * score_matrix[k, j]
+        expected_scores = probs @ self.score_matrix  # (batch, num_classes)
+
+        # Pick the prediction with highest expected score
+        return expected_scores.argmax(dim=1).cpu().numpy()
+
+    def _get_threshold_predictions(
+        self,
+        logits: torch.Tensor,
+        strategy: Optional[str] = None,
+    ) -> np.ndarray:
+        """Convert logits to class predictions using the specified strategy."""
+        strategy = strategy or self.inference_strategy
+
+        if strategy == self.INFERENCE_DECISION_THEORETIC:
+            return self._decision_theoretic_predict(logits)
+        elif strategy == self.INFERENCE_SHIFT:
+            preds = logits.argmax(dim=1).cpu().numpy()
+            return np.clip(preds + self.inference_shift, 0, len(THRESHOLD_LADDER) - 1)
+        else:  # argmax (default)
+            return logits.argmax(dim=1).cpu().numpy()
+
     @torch.no_grad()
-    def evaluate(self, loader: DataLoader) -> Dict[str, float]:
+    def evaluate(
+        self,
+        loader: DataLoader,
+        strategy: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate model on a data loader.
+
+        Args:
+            loader: Data loader to evaluate on
+            strategy: Inference strategy override (uses self.inference_strategy if None)
+        """
         self.network.eval()
         all_thresh_preds = []
         all_thresh_labels = []
         all_runtime_preds = []
         all_runtime_labels = []
-        
+
         for batch in loader:
             features = batch["features"].to(self.device)
             threshold_labels = batch["threshold_class"]
             runtime_labels = batch["log_runtime"]
-            
+
             features = self._normalize(features)
             threshold_logits, runtime_pred = self.network(features)
-            
-            thresh_preds = threshold_logits.argmax(dim=1).cpu()
+
+            thresh_preds = self._get_threshold_predictions(threshold_logits, strategy)
             runtime_pred = runtime_pred.cpu()
-            
+
             all_thresh_preds.extend(thresh_preds.tolist())
             all_thresh_labels.extend(threshold_labels.tolist())
             all_runtime_preds.extend(runtime_pred.tolist())
             all_runtime_labels.extend(runtime_labels.tolist())
-        
+
         return {
             "threshold_accuracy": accuracy_score(all_thresh_labels, all_thresh_preds),
             "runtime_mse": mean_squared_error(all_runtime_labels, all_runtime_preds),
@@ -395,20 +475,37 @@ class MLPModel(BaseModel):
         }
     
     @torch.no_grad()
-    def predict(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(
+        self,
+        features: np.ndarray,
+        strategy: Optional[str] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Predict threshold and runtime values.
+
+        Args:
+            features: Input features array
+            strategy: Inference strategy override. Options:
+                - "argmax": Standard argmax on logits (default)
+                - "decision_theoretic": Pick class with highest expected challenge score
+                - "shift": Argmax + constant shift upward
+
+        Returns:
+            Tuple of (threshold_values, runtime_values)
+        """
         self.network.eval()
-        
+
         if isinstance(features, np.ndarray):
             features = torch.tensor(features, dtype=torch.float32)
-        
+
         features = features.to(self.device)
         features = self._normalize(features)
         threshold_logits, runtime_pred = self.network(features)
-        
-        thresh_classes = threshold_logits.argmax(dim=1).cpu().numpy()
+
+        thresh_classes = self._get_threshold_predictions(threshold_logits, strategy)
         thresh_values = np.array([THRESHOLD_LADDER[c] for c in thresh_classes])
         runtime_values = np.expm1(runtime_pred.cpu().numpy())
-        
+
         return thresh_values, runtime_values
     
     def save(self, path: Path) -> None:
