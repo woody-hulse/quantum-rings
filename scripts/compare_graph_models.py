@@ -247,7 +247,7 @@ def run_single_experiment_duration(
         pred_runtime=pred_runtime,
         true_runtime=true_runtime,
     )
-    challenge_score = score_result.get("overall_score", score_result.get("mean_score", 0.0))
+    challenge_score = score_result.get("combined_score", 0.0)
     
     n_params = sum(p.numel() for p in model.parameters())
     

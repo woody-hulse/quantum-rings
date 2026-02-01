@@ -270,7 +270,7 @@ def main() -> None:
     parser.add_argument(
         "--max-gates",
         type=int,
-        default=200,
+        default=30,
         help="Skip circuits with more gates than this (default: 200)",
     )
     parser.add_argument(
@@ -328,17 +328,32 @@ def main() -> None:
         if n_qubits == 0:
             print(f"Skipping {qasm_path}: no qubits")
             continue
-        if n_qubits > args.max_qubits:
-            print(f"Skipping {qasm_path}: {n_qubits} qubits > --max-qubits {args.max_qubits}")
-            continue
+
+        gates_to_use = gates
+        n_qubits_draw = n_qubits
+        title_suffix_parts = []
+
         if len(gates) > args.max_gates:
-            print(f"Skipping {qasm_path}: {len(gates)} gates > --max-gates {args.max_gates}")
+            gates_to_use = gates[: args.max_gates]
+            title_suffix_parts.append(f"first {args.max_gates} of {len(gates)} gates")
+
+        if n_qubits_draw > args.max_qubits:
+            max_q = args.max_qubits
+            gates_to_use = [
+                (g, qs, p) for g, qs, p in gates_to_use
+                if all(0 <= q < max_q for q in qs)
+            ]
+            n_qubits_draw = max_q
+            title_suffix_parts.append(f"qubits 0–{max_q - 1} of {n_qubits}")
+
+        if not gates_to_use:
+            print(f"Skipping {qasm_path}: no gates left after subsetting (qubits/gates over limit)")
             continue
 
-        layers = assign_layers(gates)
-        fig, ax = plt.subplots(1, 1, figsize=(max(6, len(layers) * 0.15), max(3, n_qubits * 0.35)))
+        layers = assign_layers(gates_to_use)
+        fig, ax = plt.subplots(1, 1, figsize=(max(6, len(layers) * 0.15), max(3, n_qubits_draw * 0.35)))
         draw_circuit(
-            n_qubits,
+            n_qubits_draw,
             layers,
             ax,
             qubit_height=0.8,
@@ -349,6 +364,8 @@ def main() -> None:
             show_qubit_labels=not args.no_labels,
         )
         title = qasm_path.stem.replace("_", " ")
+        if title_suffix_parts:
+            title += " (" + "; ".join(title_suffix_parts) + ")"
         ax.set_title(title, fontsize=11)
         fig.tight_layout()
 
