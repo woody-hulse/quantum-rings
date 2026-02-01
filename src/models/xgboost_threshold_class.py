@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from models.gradient_boosting_base import GradientBoostingClassificationModel
+from .gradient_boosting_base import GradientBoostingClassificationModel
 from scoring import NUM_THRESHOLD_CLASSES
 
 try:

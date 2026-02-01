@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-from models.base import BaseModel, ThresholdClassBaseModel
+from .base import BaseModel, ThresholdClassBaseModel
 from data_loader import THRESHOLD_FEATURE_IDX
 from scoring import NUM_THRESHOLD_CLASSES, select_threshold_class_by_expected_score, mean_threshold_score
 

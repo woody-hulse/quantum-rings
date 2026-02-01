@@ -136,7 +136,7 @@ class GraphPositionalEncoding(nn.Module):
             degree = degree.clamp(max=self.degree_encoder.num_embeddings - 1)
             pe = pe + self.degree_encoder(degree)
         
-        batch_size = batch.max().item() + 1
+        batch_size = int(batch.max().item()) + 1
         for b in range(batch_size):
             mask = batch == b
             local_nodes = mask.sum().item()
@@ -284,7 +284,10 @@ class EdgeAwareMultiHeadAttention(nn.Module):
         max_nodes: int,
         batch_size: int,
     ) -> torch.Tensor:
-        """Compute attention bias from edges (gates)."""
+        """Compute attention bias from edges (gates).
+        
+        Uses vectorized scatter operations for efficiency.
+        """
         device = edge_index.device
         
         bias = torch.zeros(batch_size, self.num_heads, max_nodes, max_nodes, device=device)
@@ -292,25 +295,75 @@ class EdgeAwareMultiHeadAttention(nn.Module):
         if edge_index.numel() == 0:
             return bias
         
-        node_batch = batch[edge_index[0]]
+        # Compute batch offsets robustly using bincount
+        node_counts = torch.bincount(batch, minlength=batch_size)
+        batch_offsets = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            node_counts.cumsum(0)[:-1]
+        ])
         
-        batch_offsets = torch.zeros(batch_size, dtype=torch.long, device=device)
-        for b in range(1, batch_size):
-            batch_offsets[b] = (batch < b).sum()
+        # Get batch assignment for each edge (from source node)
+        edge_batch = batch[edge_index[0]]
         
-        src_local = edge_index[0] - batch_offsets[node_batch]
-        dst_local = edge_index[1] - batch_offsets[node_batch]
+        # Convert global node indices to local (within-batch) indices
+        src_local = edge_index[0] - batch_offsets[edge_batch]
+        dst_local = edge_index[1] - batch_offsets[edge_batch]
         
+        # Compute edge biases: [num_edges, num_heads]
         gate_bias = self.gate_attn_bias(edge_gate_type)
-        edge_bias = self.edge_bias_proj(edge_attr)
-        total_bias = gate_bias + edge_bias
+        edge_bias_val = self.edge_bias_proj(edge_attr)
+        total_bias = gate_bias + edge_bias_val
         
-        for i in range(edge_index.shape[1]):
-            b = node_batch[i]
-            s, d = src_local[i], dst_local[i]
-            if s < max_nodes and d < max_nodes:
-                bias[b, :, s, d] = bias[b, :, s, d] + total_bias[i]
-                bias[b, :, d, s] = bias[b, :, d, s] + total_bias[i]
+        # Create valid mask for bounds checking
+        valid_mask = (
+            (src_local >= 0) & (src_local < max_nodes) &
+            (dst_local >= 0) & (dst_local < max_nodes)
+        )
+        
+        # Filter to valid edges only
+        valid_idx = torch.where(valid_mask)[0]
+        if valid_idx.numel() == 0:
+            return bias
+        
+        edge_batch_v = edge_batch[valid_idx]
+        src_local_v = src_local[valid_idx]
+        dst_local_v = dst_local[valid_idx]
+        total_bias_v = total_bias[valid_idx]  # [num_valid, num_heads]
+        
+        # Compute linear indices into flattened bias tensor
+        # bias has shape [batch_size, num_heads, max_nodes, max_nodes]
+        # We'll use scatter_add on the last two dimensions
+        # Linear index = b * (num_heads * max_nodes * max_nodes) + h * (max_nodes * max_nodes) + s * max_nodes + d
+        
+        num_heads = self.num_heads
+        stride_b = num_heads * max_nodes * max_nodes
+        stride_h = max_nodes * max_nodes
+        stride_s = max_nodes
+        
+        # Compute base index for each edge (excluding head dimension)
+        base_idx = (
+            edge_batch_v.unsqueeze(1) * stride_b + 
+            torch.arange(num_heads, device=device).unsqueeze(0) * stride_h
+        )  # [num_valid, num_heads]
+        
+        # Add source and destination indices (forward direction: s -> d)
+        fwd_idx = base_idx + src_local_v.unsqueeze(1) * stride_s + dst_local_v.unsqueeze(1)
+        
+        # Add reverse direction: d -> s (for symmetric bias)
+        rev_idx = base_idx + dst_local_v.unsqueeze(1) * stride_s + src_local_v.unsqueeze(1)
+        
+        # Flatten bias and use scatter_add
+        bias_flat = bias.view(-1)
+        
+        # Add forward direction
+        bias_flat.scatter_add_(0, fwd_idx.view(-1), total_bias_v.view(-1))
+        
+        # Add reverse direction (only for non-self-loops)
+        non_self_loop = src_local_v != dst_local_v
+        if non_self_loop.any():
+            rev_idx_filtered = rev_idx[non_self_loop]
+            total_bias_filtered = total_bias_v[non_self_loop]
+            bias_flat.scatter_add_(0, rev_idx_filtered.view(-1), total_bias_filtered.view(-1))
         
         return bias
 

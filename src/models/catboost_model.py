@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from models.gradient_boosting_base import GradientBoostingRegressionModel
+from .gradient_boosting_base import GradientBoostingRegressionModel
 
 try:
     from catboost import CatBoostRegressor

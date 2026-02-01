@@ -14,8 +14,8 @@ from tqdm import tqdm
 
 from data_loader import get_feature_statistics, FEATURE_DIM_WITHOUT_THRESHOLD
 from scoring import NUM_THRESHOLD_CLASSES, select_threshold_class_by_expected_score, mean_threshold_score
-from models.base import ThresholdClassBaseModel
-from models.mlp import build_mlp_encoder
+from .base import ThresholdClassBaseModel
+from .mlp import build_mlp_encoder
 
 
 class MLPThresholdClassNetwork(nn.Module):

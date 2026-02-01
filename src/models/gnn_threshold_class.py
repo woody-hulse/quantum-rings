@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from data_loader import THRESHOLD_LADDER
 from scoring import select_threshold_class_by_expected_score
-from models.base import ThresholdClassBaseModel
+from .base import ThresholdClassBaseModel
 
 from gnn.model import create_gnn_threshold_class_model
 from gnn.dataset import NUM_THRESHOLD_CLASSES, GLOBAL_FEAT_DIM_THRESHOLD_CLASS

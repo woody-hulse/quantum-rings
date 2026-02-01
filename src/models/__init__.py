@@ -12,24 +12,24 @@ Graph Models:
 Use create_graph_model() factory function for easy instantiation.
 """
 
-from models.base import BaseModel, ThresholdClassBaseModel
-from models.gradient_boosting_base import (
+from .base import BaseModel, ThresholdClassBaseModel
+from .gradient_boosting_base import (
     GradientBoostingRegressionModel,
     GradientBoostingClassificationModel,
 )
-from models.mlp import MLPModel
-from models.mlp_threshold_class import MLPThresholdClassModel
-from models.xgboost_model import XGBoostModel
-from models.xgboost_threshold_class import XGBoostThresholdClassModel
-from models.catboost_model import CatBoostModel
-from models.catboost_threshold_class import CatBoostThresholdClassModel
-from models.lightgbm_model import LightGBMModel
-from models.gnn_threshold_class import GNNThresholdClassModel
-from models.temporal_gnn_model import (
+from .mlp import MLPModel
+from .mlp_threshold_class import MLPThresholdClassModel
+from .xgboost_model import XGBoostModel
+from .xgboost_threshold_class import XGBoostThresholdClassModel
+from .catboost_model import CatBoostModel
+from .catboost_threshold_class import CatBoostThresholdClassModel
+from .lightgbm_model import LightGBMModel
+from .gnn_threshold_class import GNNThresholdClassModel
+from .temporal_gnn_model import (
     TemporalGNNDurationModel,
     TemporalGNNThresholdClassModel,
 )
-from models.graph_models import (
+from .graph_models import (
     BaseGraphModelWrapper,
     GraphModelConfig,
     BasicGNNThresholdClassModel,

@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-02-01T03:01:22.070829",
+  "task": "threshold",
+  "suite": "all",
+  "n_runs": 1,
+  "batch_size": 8,
+  "device": "cpu",
+  "seed": 42,
+  "model_names": [
+    "XGBoost",
+    "MLP"
+  ],
+  "results": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 2.729936122894287,
+      "parameters": 100,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.990990990990991,
+      "val_primary_metric": 0.6346153846153846,
+      "train_secondary_metric": 0.9819819819819819,
+      "val_secondary_metric": 0.6153846153846154,
+      "extra_metrics": {
+        "underpred_rate": 0.23076923076923078,
+        "overpred_rate": 0.15384615384615385
+      }
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 2.405705213546753,
+      "parameters": 64393,
+      "epochs_trained": 2,
+      "train_primary_metric": 0.972972972972973,
+      "val_primary_metric": 0.4567307692307692,
+      "train_secondary_metric": 0.9459459459459459,
+      "val_secondary_metric": 0.34615384615384615,
+      "extra_metrics": {
+        "underpred_rate": 0.23076923076923078,
+        "overpred_rate": 0.4230769230769231
+      }
+    }
+  ],
+  "aggregated": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "description": "Gradient boosted trees with XGBoost",
+      "task": "threshold",
+      "n_runs": 1,
+      "parameters": 100,
+      "val_primary_mean": 0.6346153846153846,
+      "val_primary_std": 0.0,
+      "val_secondary_mean": 0.6153846153846154,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 2.729936122894287,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.23076923076923078,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.15384615384615385,
+        "overpred_rate_std": 0.0
+      },
+      "rank_by_primary": 1
+    },
+    {
+      "model_name": "MLP",
+      "model_type": "MLPThresholdClassModel",
+      "is_graph": false,
+      "description": "Multi-layer perceptron with dropout",
+      "task": "threshold",
+      "n_runs": 1,
+      "parameters": 64393,
+      "val_primary_mean": 0.4567307692307692,
+      "val_primary_std": 0.0,
+      "val_secondary_mean": 0.34615384615384615,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 2.405705213546753,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.23076923076923078,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.4230769230769231,
+        "overpred_rate_std": 0.0
+      },
+      "rank_by_primary": 2
+    }
+  ],
+  "best_model": "XGBoost"
+}

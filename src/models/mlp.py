@@ -14,7 +14,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from tqdm import tqdm
 
 from data_loader import THRESHOLD_FEATURE_IDX, get_feature_statistics
-from models.base import BaseModel
+from .base import BaseModel
 
 
 def build_mlp_encoder(input_dim: int, hidden_dims: List[int], dropout: float) -> nn.Module:

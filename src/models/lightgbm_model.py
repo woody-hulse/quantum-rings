@@ -8,7 +8,7 @@ import warnings
 
 import numpy as np
 
-from models.gradient_boosting_base import GradientBoostingRegressionModel
+from .gradient_boosting_base import GradientBoostingRegressionModel
 
 warnings.filterwarnings('ignore', message='X does not have valid feature names')
 

@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-from models.base import BaseModel
+from .base import BaseModel
 
 
 class EnsembleModel(BaseModel):

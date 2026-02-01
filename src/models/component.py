@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 from torch.utils.data import DataLoader
 
-from models.base import BaseModel
+from .base import BaseModel
 from component_model import (
     parse_circuit_gates,
     AnalyticalCostModel as _AnalyticalCostModel,

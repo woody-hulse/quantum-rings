@@ -325,19 +325,19 @@ def main():
                         help="Model types to compare (default: all)")
     parser.add_argument("--n-runs", type=int, default=3,
                         help="Number of runs per model")
-    parser.add_argument("--hidden-dim", type=int, default=64,
+    parser.add_argument("--hidden-dim", type=int, default=16,
                         help="Hidden dimension")
     parser.add_argument("--num-layers", type=int, default=4,
                         help="Number of layers")
-    parser.add_argument("--num-heads", type=int, default=4,
+    parser.add_argument("--num-heads", type=int, default=2,
                         help="Number of attention heads")
-    parser.add_argument("--dropout", type=float, default=0.2,
+    parser.add_argument("--dropout", type=float, default=0.1,
                         help="Dropout rate")
     parser.add_argument("--epochs", type=int, default=100,
                         help="Maximum epochs")
     parser.add_argument("--patience", type=int, default=20,
                         help="Early stopping patience")
-    parser.add_argument("--batch-size", type=int, default=16,
+    parser.add_argument("--batch-size", type=int, default=8,
                         help="Batch size")
     parser.add_argument("--device", type=str, default="cpu",
                         help="Device (cpu/cuda/mps)")

@@ -578,12 +578,12 @@ class TemporalGNNThresholdClassModelV2(BaseGraphModelWrapper):
 
 def create_graph_model(
     model_type: str,
-    hidden_dim: int = 64,
+    hidden_dim: int = 16,
     num_layers: int = 4,
-    num_heads: int = 4,
-    dropout: float = 0.2,
+    num_heads: int = 2,
+    dropout: float = 0.1,
     learning_rate: float = 1e-3,
-    weight_decay: float = 1e-4,
+    weight_decay: float = 1e-3,
     epochs: int = 100,
     patience: int = 20,
     use_ordinal: bool = True,
