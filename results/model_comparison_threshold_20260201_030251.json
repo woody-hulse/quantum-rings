@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-02-01T03:02:51.083382",
+  "task": "threshold",
+  "suite": "all",
+  "n_runs": 1,
+  "batch_size": 8,
+  "device": "cpu",
+  "seed": 42,
+  "model_names": [
+    "XGBoost",
+    "BasicGNN"
+  ],
+  "results": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 2.7949421405792236,
+      "parameters": 100,
+      "epochs_trained": 0,
+      "train_primary_metric": 0.9908256880733946,
+      "val_primary_metric": 0.875,
+      "train_secondary_metric": 0.981651376146789,
+      "val_secondary_metric": 0.8571428571428571,
+      "extra_metrics": {
+        "underpred_rate": 0.0,
+        "overpred_rate": 0.14285714285714285
+      }
+    },
+    {
+      "model_name": "BasicGNN",
+      "model_type": "BasicGNNThresholdClassModel",
+      "is_graph": true,
+      "run_id": 0,
+      "task": "threshold",
+      "train_time_s": 32.22036600112915,
+      "parameters": 153993,
+      "epochs_trained": 23,
+      "train_primary_metric": 0.7767857142857143,
+      "val_primary_metric": 0.57,
+      "train_secondary_metric": 0.625,
+      "val_secondary_metric": 0.48,
+      "extra_metrics": {
+        "underpred_rate": 0.2,
+        "overpred_rate": 0.32
+      }
+    }
+  ],
+  "aggregated": [
+    {
+      "model_name": "XGBoost",
+      "model_type": "XGBoostThresholdClassModel",
+      "is_graph": false,
+      "description": "Gradient boosted trees with XGBoost",
+      "task": "threshold",
+      "n_runs": 1,
+      "parameters": 100,
+      "val_primary_mean": 0.875,
+      "val_primary_std": 0.0,
+      "val_secondary_mean": 0.8571428571428571,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 2.7949421405792236,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.0,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.14285714285714285,
+        "overpred_rate_std": 0.0
+      },
+      "rank_by_primary": 1
+    },
+    {
+      "model_name": "BasicGNN",
+      "model_type": "BasicGNNThresholdClassModel",
+      "is_graph": true,
+      "description": "Simple message-passing GNN",
+      "task": "threshold",
+      "n_runs": 1,
+      "parameters": 153993,
+      "val_primary_mean": 0.57,
+      "val_primary_std": 0.0,
+      "val_secondary_mean": 0.48,
+      "val_secondary_std": 0.0,
+      "train_time_mean": 32.22036600112915,
+      "extra_metrics": {
+        "underpred_rate_mean": 0.2,
+        "underpred_rate_std": 0.0,
+        "overpred_rate_mean": 0.32,
+        "overpred_rate_std": 0.0
+      },
+      "rank_by_primary": 2
+    }
+  ],
+  "best_model": "XGBoost"
+}

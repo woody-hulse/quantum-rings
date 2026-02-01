@@ -740,7 +740,7 @@ def run_comparison(
     return output
 
 
-def plot_from_json(json_path: Path, output_dir: Optional[Path] = None) -> None:
+def plot_from_json(json_path: Path, output_dir: Optional[Path] = None, show: bool = False) -> None:
     """Generate plots from existing JSON results."""
     with open(json_path, 'r') as f:
         data = json.load(f)
@@ -753,6 +753,128 @@ def plot_from_json(json_path: Path, output_dir: Optional[Path] = None) -> None:
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     plot_comparison(aggregated, task, output_dir, timestamp)
+    
+    if show:
+        plt.show()
+
+
+def plot_single_metric(
+    json_path: Path,
+    metric: str = "primary",
+    output_path: Optional[Path] = None,
+    title: Optional[str] = None,
+    show: bool = False,
+) -> None:
+    """Generate a single bar plot for a specific metric.
+    
+    Args:
+        json_path: Path to JSON results file.
+        metric: One of 'primary', 'secondary', 'parameters', 'time', 
+                'underpred', 'overpred'.
+        output_path: Where to save the plot.
+        title: Custom title for the plot.
+        show: Whether to display the plot interactively.
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    
+    task = ModelTask(data["task"])
+    aggregated = [AggregatedResult(**a) for a in data["aggregated"]]
+    
+    if task == ModelTask.THRESHOLD:
+        by_primary = sorted(aggregated, key=lambda x: x.val_primary_mean, reverse=True)
+    else:
+        by_primary = sorted(aggregated, key=lambda x: x.val_primary_mean, reverse=False)
+    
+    model_names = [r.model_name for r in by_primary]
+    is_graph = [r.is_graph for r in by_primary]
+    colors = ['#2ecc71' if g else '#3498db' for g in is_graph]
+    x = np.arange(len(model_names))
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    if metric == "primary":
+        vals = [r.val_primary_mean for r in by_primary]
+        errs = [r.val_primary_std for r in by_primary]
+        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=0.8)
+        if task == ModelTask.THRESHOLD:
+            ylabel = "Expected Threshold Score"
+            default_title = "Validation Score (Higher is Better)"
+        else:
+            ylabel = "Mean Absolute Error"
+            default_title = "Validation MAE (Lower is Better)"
+        ax.set_ylabel(ylabel)
+        
+    elif metric == "secondary":
+        vals = [r.val_secondary_mean for r in by_primary]
+        errs = [r.val_secondary_std for r in by_primary]
+        ax.bar(x, vals, yerr=errs, color=colors, capsize=4, alpha=0.8)
+        if task == ModelTask.THRESHOLD:
+            ylabel = "Accuracy"
+            default_title = "Validation Accuracy"
+        else:
+            ylabel = "MSE"
+            default_title = "Validation MSE"
+        ax.set_ylabel(ylabel)
+        
+    elif metric == "parameters":
+        vals = [r.parameters if r.parameters > 0 else 1 for r in by_primary]
+        ax.bar(x, vals, color=colors, alpha=0.8)
+        ax.set_ylabel("Parameters")
+        ax.set_yscale('log')
+        default_title = "Model Size (Parameters)"
+        
+    elif metric == "time":
+        vals = [r.train_time_mean for r in by_primary]
+        ax.bar(x, vals, color=colors, alpha=0.8)
+        ax.set_ylabel("Time (seconds)")
+        default_title = "Training Time"
+        
+    elif metric in ("underpred", "underprediction"):
+        vals = [r.extra_metrics.get("underpred_rate_mean", 0) for r in by_primary]
+        ax.bar(x, vals, color='#e74c3c', alpha=0.8)
+        ax.set_ylabel("Rate")
+        default_title = "Underprediction Rate"
+        
+    elif metric in ("overpred", "overprediction"):
+        vals = [r.extra_metrics.get("overpred_rate_mean", 0) for r in by_primary]
+        ax.bar(x, vals, color='#f39c12', alpha=0.8)
+        ax.set_ylabel("Rate")
+        default_title = "Overprediction Rate"
+        
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
+    
+    ax.set_title(title or default_title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names, rotation=45, ha='right')
+    ax.grid(axis='y', alpha=0.3)
+    
+    graph_patch = mpatches.Patch(color='#2ecc71', label='Graph-based', alpha=0.8)
+    tabular_patch = mpatches.Patch(color='#3498db', label='Tabular', alpha=0.8)
+    ax.legend(handles=[graph_patch, tabular_patch], loc='best')
+    
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Plot saved to: {output_path}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+
+def print_summary_from_json(json_path: Path) -> None:
+    """Print a summary table from JSON results."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    
+    task = ModelTask(data["task"])
+    aggregated = [AggregatedResult(**a) for a in data["aggregated"]]
+    
+    print_results_table(aggregated, task)
 
 
 def main():
@@ -777,11 +899,33 @@ def main():
                         help="Verbose training output")
     parser.add_argument("--plot-json", type=str, default=None,
                         help="Generate plots from existing JSON file")
+    parser.add_argument("--plot-metric", type=str, default=None,
+                        choices=["primary", "secondary", "parameters", "time", "underpred", "overpred"],
+                        help="Generate single metric plot from JSON")
+    parser.add_argument("--print-summary", type=str, default=None,
+                        help="Print summary table from JSON file")
+    parser.add_argument("--show", action="store_true",
+                        help="Show plots interactively")
     
     args = parser.parse_args()
     
+    if args.print_summary:
+        print_summary_from_json(Path(args.print_summary))
+        return
+    
     if args.plot_json:
-        plot_from_json(Path(args.plot_json))
+        json_path = Path(args.plot_json)
+        if args.plot_metric:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = json_path.parent / f"{json_path.stem}_{args.plot_metric}_{timestamp}.png"
+            plot_single_metric(
+                json_path, 
+                metric=args.plot_metric,
+                output_path=output_path,
+                show=args.show,
+            )
+        else:
+            plot_from_json(json_path, show=args.show)
         return
     
     project_root = Path(__file__).parent.parent
