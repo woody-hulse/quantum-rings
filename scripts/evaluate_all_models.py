@@ -35,16 +35,23 @@ from models.component import (
 )
 
 try:
-    from models.mlp import MLPModel
+    from models.mlp import MLPModel, MLPContinuousModel
     HAS_MLP = True
 except ImportError:
     HAS_MLP = False
+    MLPContinuousModel = None
 
 try:
     from models.xgboost_model import XGBoostModel
     HAS_XGB = True
 except ImportError:
     HAS_XGB = False
+
+try:
+    from models.catboost_model import CatBoostModel
+    HAS_CATBOOST = True
+except ImportError:
+    HAS_CATBOOST = False
 
 from scoring import compute_challenge_score
 
@@ -198,11 +205,29 @@ def create_model(model_name: str, input_dim: int, seed: int = 42) -> tuple:
             epochs=100,
             early_stopping_patience=20,
         ), False
+    elif model_name == "mlp_continuous" and HAS_MLP:
+        import torch
+        torch.manual_seed(seed)
+        return MLPContinuousModel(
+            input_dim=input_dim,
+            hidden_dims=[128, 64, 32],
+            dropout=0.2,
+            device="cpu",
+            epochs=100,
+            early_stopping_patience=20,
+        ), False
     elif model_name == "xgboost" and HAS_XGB:
         return XGBoostModel(
             max_depth=6,
             learning_rate=0.1,
             n_estimators=100,
+            random_state=seed,
+        ), False
+    elif model_name == "catboost" and HAS_CATBOOST:
+        return CatBoostModel(
+            depth=6,
+            learning_rate=0.1,
+            iterations=100,
             random_state=seed,
         ), False
     else:
@@ -254,7 +279,6 @@ def evaluate_model_cv(
     n_runs: int = 3,
     batch_size: int = 32,
     base_seed: int = 42,
-    input_dim: int = 81,
 ) -> Dict[str, Any]:
     """
     Evaluate a model with cross-validation and multiple runs.
@@ -267,6 +291,7 @@ def evaluate_model_cv(
     print(f"Running {n_folds}-fold CV with {n_runs} runs each...")
     
     all_results = []
+    input_dim = None  # Will be detected from first batch
     
     for run in range(n_runs):
         run_seed = base_seed + run * 1000
@@ -280,6 +305,11 @@ def evaluate_model_cv(
                 batch_size=batch_size,
                 seed=run_seed,
             )
+            
+            # Detect input_dim from first batch if not yet known
+            if input_dim is None:
+                first_batch = next(iter(train_loader))
+                input_dim = first_batch["features"].shape[1]
             
             model, is_component = create_model(model_name, input_dim, run_seed + fold)
             result = run_single_fold(model, train_loader, val_loader, is_component)
@@ -308,8 +338,8 @@ def evaluate_model_cv(
 
 def main():
     parser = argparse.ArgumentParser(description="Unified model evaluation with CV")
-    parser.add_argument("--models", nargs="+", default=["learned_component", "analytical", "bond_dimension", "entanglement_budget", "xgboost", "mlp"],
-                        help="Models to evaluate")
+    parser.add_argument("--models", nargs="+", default=["mlp", "xgboost"],
+                        help="Models to evaluate (e.g., mlp, xgboost, catboost, analytical)")
     parser.add_argument("--n-folds", type=int, default=5, help="Number of CV folds")
     parser.add_argument("--n-runs", type=int, default=3, help="Number of runs per fold")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -326,8 +356,11 @@ def main():
     ]
     if HAS_MLP:
         all_model_names.append("mlp")
+        all_model_names.append("mlp_continuous")
     if HAS_XGB:
         all_model_names.append("xgboost")
+    if HAS_CATBOOST:
+        all_model_names.append("catboost")
     
     if "all" in args.models:
         models_to_run = all_model_names

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOLD_LADDER
 from models.base import BaseModel
-from models.mlp import MLPModel
+from models.mlp import MLPModel, MLPContinuousModel
 from models.xgboost_model import XGBoostModel
 from models.catboost_model import CatBoostModel
 from models.lightgbm_model import LightGBMModel
@@ -28,6 +28,7 @@ from scoring import compute_challenge_score
 
 AVAILABLE_MODELS = {
     "mlp": MLPModel,
+    "mlp_continuous": MLPContinuousModel,
     "xgboost": XGBoostModel,
     "catboost": CatBoostModel,
     "lightgbm": LightGBMModel,
@@ -130,7 +131,23 @@ def create_model(
             device=kwargs.get("device", "cpu"),
             epochs=kwargs.get("epochs", 100),
             early_stopping_patience=kwargs.get("early_stopping_patience", 20),
-            use_scoring_loss=kwargs.get("use_scoring_loss", False),
+            threshold_weight=kwargs.get("threshold_weight", 1.0),
+            runtime_weight=kwargs.get("runtime_weight", 1.0),
+            temperature=kwargs.get("temperature", 1.0),
+        )
+    elif model_class == MLPContinuousModel:
+        return MLPContinuousModel(
+            input_dim=input_dim,
+            hidden_dims=kwargs.get("hidden_dims", [128, 64, 32]),
+            dropout=kwargs.get("dropout", 0.2),
+            lr=kwargs.get("lr", 1e-3),
+            weight_decay=kwargs.get("weight_decay", 1e-4),
+            device=kwargs.get("device", "cpu"),
+            epochs=kwargs.get("epochs", 100),
+            early_stopping_patience=kwargs.get("early_stopping_patience", 20),
+            threshold_weight=kwargs.get("threshold_weight", 1.0),
+            runtime_weight=kwargs.get("runtime_weight", 1.0),
+            temperature=kwargs.get("temperature", 10.0),
         )
     elif model_class == XGBoostModel:
         return XGBoostModel(
@@ -493,7 +510,19 @@ def main():
     parser.add_argument("--kfold", type=int, default=0,
                         help="Number of folds for cross-validation (0=disabled, default: 0)")
     parser.add_argument("--scoring-loss", action="store_true",
-                        help="Use challenge-aligned scoring loss (multiplicative) instead of standard losses") # bad
+                        help="Use challenge-aligned scoring loss (multiplicative) instead of standard losses")
+    parser.add_argument("--asymmetric-loss", action="store_true",
+                        help="Use asymmetric log2 loss (penalizes threshold underprediction more steeply)")
+    parser.add_argument("--log2-mse-loss", action="store_true",
+                        help="Use CrossEntropy + MSE in log2 space for runtime (well-aligned with scoring)")
+    parser.add_argument("--underprediction-steepness", type=float, default=5.0,
+                        help="Steepness multiplier for underprediction penalty (default: 5.0, only with --asymmetric-loss)")
+    parser.add_argument("--underprediction-penalty", type=float, default=2.0,
+                        help="Penalty multiplier for threshold underprediction (default: 2.0, only for continuous_mlp)")
+    parser.add_argument("--threshold-weight", type=float, default=1.0,
+                        help="Weight for threshold loss component (default: 1.0)")
+    parser.add_argument("--runtime-weight", type=float, default=1.0,
+                        help="Weight for runtime loss component (default: 1.0)")
     args = parser.parse_args()
     
     project_root = Path(__file__).parent.parent
@@ -523,7 +552,11 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Base seed: {args.seed}")
     print(f"  Device: {args.device}")
-    if args.scoring_loss:
+    if args.log2_mse_loss:
+        print(f"  Loss: CrossEntropy + MSE in log2 space")
+    elif args.asymmetric_loss:
+        print(f"  Loss: Asymmetric log2 loss (steepness={args.underprediction_steepness})")
+    elif args.scoring_loss:
         print(f"  Loss: Challenge-aligned scoring loss (multiplicative)")
     else:
         print(f"  Loss: Standard (CrossEntropy + MSE)")
@@ -553,6 +586,12 @@ def main():
         "device": args.device,
         "epochs": args.epochs,
         "use_scoring_loss": args.scoring_loss,
+        "use_asymmetric_loss": args.asymmetric_loss,
+        "use_log2_mse_loss": args.log2_mse_loss,
+        "underprediction_steepness": args.underprediction_steepness,
+        "underprediction_penalty": args.underprediction_penalty,
+        "threshold_weight": args.threshold_weight,
+        "runtime_weight": args.runtime_weight,
     }
     
     if use_kfold:

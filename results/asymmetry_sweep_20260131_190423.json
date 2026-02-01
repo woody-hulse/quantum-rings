@@ -1,0 +1,187 @@
+{
+  "config": {
+    "model_types": [
+      "continuous"
+    ],
+    "min_asymmetry": 0.5,
+    "max_asymmetry": 10.0,
+    "n_values": 15,
+    "log_scale": false,
+    "n_folds": 5,
+    "n_seeds": 2,
+    "epochs": 50
+  },
+  "best_by_model": {
+    "continuous": {
+      "score": 0.3127066399687345,
+      "asymmetry": 7.2857142857142865
+    }
+  },
+  "results": [
+    {
+      "asymmetry": 0.5,
+      "model_type": "continuous",
+      "combined_score_mean": 0.30463924123888986,
+      "combined_score_std": 0.1719682300231026,
+      "threshold_score_mean": 0.5866029009304873,
+      "threshold_score_std": 0.1739812228616268,
+      "runtime_score_mean": 0.3171672634478088,
+      "runtime_score_std": 0.17522103253294047,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 1.1785714285714286,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2933205644559581,
+      "combined_score_std": 0.13263556526834192,
+      "threshold_score_mean": 0.5824120142309798,
+      "threshold_score_std": 0.12928188144417158,
+      "runtime_score_mean": 0.36064586774672835,
+      "runtime_score_std": 0.1662210348405694,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 1.8571428571428572,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2768042105889567,
+      "combined_score_std": 0.14466577913905734,
+      "threshold_score_mean": 0.5831201423097975,
+      "threshold_score_std": 0.1485781615163423,
+      "runtime_score_mean": 0.34575474668787926,
+      "runtime_score_std": 0.17270807991354112,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 2.5357142857142856,
+      "model_type": "continuous",
+      "combined_score_mean": 0.23595711190354182,
+      "combined_score_std": 0.14557308980620198,
+      "threshold_score_mean": 0.5270043787629993,
+      "threshold_score_std": 0.17169540913854106,
+      "runtime_score_mean": 0.3136023197433935,
+      "runtime_score_std": 0.18049371458889044,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 3.2142857142857144,
+      "model_type": "continuous",
+      "combined_score_mean": 0.23695815836427997,
+      "combined_score_std": 0.11409251219406773,
+      "threshold_score_mean": 0.5488744526546251,
+      "threshold_score_std": 0.12558543288211974,
+      "runtime_score_mean": 0.30363645434877384,
+      "runtime_score_std": 0.1578366172798684,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 3.8928571428571432,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2729949959366733,
+      "combined_score_std": 0.12142221812841221,
+      "threshold_score_mean": 0.5903307334428023,
+      "threshold_score_std": 0.12295903634299257,
+      "runtime_score_mean": 0.3455198703605985,
+      "runtime_score_std": 0.1650046547751423,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 4.571428571428571,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2672788053580884,
+      "combined_score_std": 0.13126695245411996,
+      "threshold_score_mean": 0.5866361521620143,
+      "threshold_score_std": 0.12187352010938558,
+      "runtime_score_mean": 0.35127137825613475,
+      "runtime_score_std": 0.1693519495689045,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 5.25,
+      "model_type": "continuous",
+      "combined_score_mean": 0.28372609181549563,
+      "combined_score_std": 0.0966084330037322,
+      "threshold_score_mean": 0.6219579912424741,
+      "threshold_score_std": 0.1292769904861251,
+      "runtime_score_mean": 0.3652323602635472,
+      "runtime_score_std": 0.12965289635504834,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 5.928571428571429,
+      "model_type": "continuous",
+      "combined_score_mean": 0.27824963966605054,
+      "combined_score_std": 0.08405919655723113,
+      "threshold_score_mean": 0.5926453658091589,
+      "threshold_score_std": 0.11211918353353753,
+      "runtime_score_mean": 0.34589004315524063,
+      "runtime_score_std": 0.10015198646517633,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 6.607142857142858,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3050913264027687,
+      "combined_score_std": 0.06656200162879901,
+      "threshold_score_mean": 0.6324184569421639,
+      "threshold_score_std": 0.07218536615333991,
+      "runtime_score_mean": 0.3965300112528459,
+      "runtime_score_std": 0.10179737988344024,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 7.2857142857142865,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3127066399687345,
+      "combined_score_std": 0.049748469781035726,
+      "threshold_score_mean": 0.6505491812625432,
+      "threshold_score_std": 0.052544947806689404,
+      "runtime_score_mean": 0.38274643216669213,
+      "runtime_score_std": 0.06564436574777958,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 7.964285714285714,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2967456570928568,
+      "combined_score_std": 0.05070660210327942,
+      "threshold_score_mean": 0.6435769932494071,
+      "threshold_score_std": 0.10993860508400027,
+      "runtime_score_mean": 0.3661787273326248,
+      "runtime_score_std": 0.06078689501691249,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 8.642857142857142,
+      "model_type": "continuous",
+      "combined_score_mean": 0.28339735485631745,
+      "combined_score_std": 0.07269472652160078,
+      "threshold_score_mean": 0.623145137748586,
+      "threshold_score_std": 0.1369499372209613,
+      "runtime_score_mean": 0.35372178979732893,
+      "runtime_score_std": 0.07600521736416901,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 9.321428571428571,
+      "model_type": "continuous",
+      "combined_score_mean": 0.29167103342831746,
+      "combined_score_std": 0.04137263632636212,
+      "threshold_score_mean": 0.636345181080095,
+      "threshold_score_std": 0.08859856181692541,
+      "runtime_score_mean": 0.36318369386850896,
+      "runtime_score_std": 0.06254101248952738,
+      "n_evaluations": 10
+    },
+    {
+      "asymmetry": 10.0,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2892829530287283,
+      "combined_score_std": 0.07362115526244427,
+      "threshold_score_mean": 0.6497695904032111,
+      "threshold_score_std": 0.08559005125289522,
+      "runtime_score_mean": 0.35337719240917786,
+      "runtime_score_std": 0.06228293549196074,
+      "n_evaluations": 10
+    }
+  ]
+}

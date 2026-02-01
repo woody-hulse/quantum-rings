@@ -1,0 +1,132 @@
+{
+  "config": {
+    "model_types": [
+      "continuous"
+    ],
+    "min_temp": 1.0,
+    "max_temp": 5.0,
+    "n_values": 10,
+    "log_scale": false,
+    "n_folds": 5,
+    "n_seeds": 2,
+    "epochs": 50
+  },
+  "best_by_model": {
+    "continuous": {
+      "score": 0.3305551166704423,
+      "temperature": 5.0
+    }
+  },
+  "results": [
+    {
+      "temperature": 1.0,
+      "model_type": "continuous",
+      "combined_score_mean": 0.26125929090586625,
+      "combined_score_std": 0.1505975893693144,
+      "threshold_score_mean": 0.5251570881226055,
+      "threshold_score_std": 0.14202792056882393,
+      "runtime_score_mean": 0.2800838994517404,
+      "runtime_score_std": 0.16621050519760955,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 1.4444444444444444,
+      "model_type": "continuous",
+      "combined_score_mean": 0.30504712973961035,
+      "combined_score_std": 0.15640180741536508,
+      "threshold_score_mean": 0.6175166940339354,
+      "threshold_score_std": 0.16936328303836348,
+      "runtime_score_mean": 0.3241655431534748,
+      "runtime_score_std": 0.16665251371429576,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 1.8888888888888888,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3077181789095776,
+      "combined_score_std": 0.156895339971409,
+      "threshold_score_mean": 0.6209649698960045,
+      "threshold_score_std": 0.15383202909601928,
+      "runtime_score_mean": 0.3262323874667062,
+      "runtime_score_std": 0.1704701946994082,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 2.333333333333333,
+      "model_type": "continuous",
+      "combined_score_mean": 0.2969753550213231,
+      "combined_score_std": 0.15655080400530416,
+      "threshold_score_mean": 0.6311817186644773,
+      "threshold_score_std": 0.16788190525116606,
+      "runtime_score_mean": 0.3223530120146153,
+      "runtime_score_std": 0.16765758838870254,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 2.7777777777777777,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3063082888960076,
+      "combined_score_std": 0.1486034568861689,
+      "threshold_score_mean": 0.6167703886152162,
+      "threshold_score_std": 0.14153420665515568,
+      "runtime_score_mean": 0.3158726496013348,
+      "runtime_score_std": 0.1602429983403002,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 3.2222222222222223,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3259955861767435,
+      "combined_score_std": 0.17094181470090838,
+      "threshold_score_mean": 0.6494132457580732,
+      "threshold_score_std": 0.16904844299312757,
+      "runtime_score_mean": 0.32670226541937175,
+      "runtime_score_std": 0.17066356152336784,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 3.6666666666666665,
+      "model_type": "continuous",
+      "combined_score_mean": 0.321911255562637,
+      "combined_score_std": 0.1629170287554926,
+      "threshold_score_mean": 0.661974822112753,
+      "threshold_score_std": 0.16769981187785404,
+      "runtime_score_mean": 0.32324284345522136,
+      "runtime_score_std": 0.1629010935480195,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 4.111111111111111,
+      "model_type": "continuous",
+      "combined_score_mean": 0.32455833297163705,
+      "combined_score_std": 0.15998300647217295,
+      "threshold_score_mean": 0.6522408319649698,
+      "threshold_score_std": 0.17055313204485187,
+      "runtime_score_mean": 0.3290519483679174,
+      "runtime_score_std": 0.15899324935381748,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 4.555555555555555,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3263737997689395,
+      "combined_score_std": 0.16809074872127477,
+      "threshold_score_mean": 0.6665265462506842,
+      "threshold_score_std": 0.1691631869366821,
+      "runtime_score_mean": 0.3304417340832785,
+      "runtime_score_std": 0.16640497465446935,
+      "n_evaluations": 10
+    },
+    {
+      "temperature": 5.0,
+      "model_type": "continuous",
+      "combined_score_mean": 0.3305551166704423,
+      "combined_score_std": 0.16927781568465525,
+      "threshold_score_mean": 0.665423097974822,
+      "threshold_score_std": 0.16805589020601286,
+      "runtime_score_mean": 0.3305551166704423,
+      "runtime_score_std": 0.16927781568465525,
+      "n_evaluations": 10
+    }
+  ]
+}
