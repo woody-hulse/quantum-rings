@@ -20,6 +20,7 @@ try:
     import xgboost as xgb
     HAS_XGBOOST = True
 except ImportError:
+    print(1111111111111111111111111)
     HAS_XGBOOST = False
 
 
@@ -100,7 +101,7 @@ class XGBoostModel(BaseModel):
         self.threshold_model = xgb.XGBRegressor(**thresh_params)
         self.threshold_model.fit(
             X_train_scaled, y_thresh_train,
-            eval_set=[(X_val_scaled, y_thresh_val)],
+            eval_set=[(X_train_scaled, y_thresh_train), (X_val_scaled, y_thresh_val)],
             verbose=False,
         )
         
@@ -119,7 +120,7 @@ class XGBoostModel(BaseModel):
         self.runtime_model = xgb.XGBRegressor(**runtime_params)
         self.runtime_model.fit(
             X_train_scaled, y_runtime_train,
-            eval_set=[(X_val_scaled, y_runtime_val)],
+            eval_set=[(X_train_scaled, y_runtime_train), (X_val_scaled, y_runtime_val)],
             verbose=False,
         )
         

@@ -15,6 +15,9 @@ from typing import Dict, List, Any, Type, Tuple
 import numpy as np
 import torch
 from tqdm import tqdm
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -22,12 +25,16 @@ from data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOL
 from models.base import BaseModel
 from models.mlp import MLPModel
 from models.xgboost_model import XGBoostModel
+from models.rohan7 import Rohan7Model
+from models.rohan8 import Rohan8Model
 from scoring import compute_challenge_score
 
 
 AVAILABLE_MODELS = {
     "mlp": MLPModel,
     "xgboost": XGBoostModel,
+    "rohan7": Rohan7Model,
+    "rohan8": Rohan8Model,
 }
 
 
@@ -137,6 +144,30 @@ def create_model(
             colsample_bytree=kwargs.get("colsample_bytree", 0.8),
             random_state=seed,
         )
+    elif model_class == Rohan7Model:
+        return Rohan7Model(
+            top_k=kwargs.get("top_k", 20),
+            max_depth=kwargs.get("max_depth", 6),
+            learning_rate=kwargs.get("learning_rate", 0.1),
+            n_estimators=kwargs.get("n_estimators", 100),
+            subsample=kwargs.get("subsample", 0.8),
+            colsample_bytree=kwargs.get("colsample_bytree", 0.8),
+            random_state=seed,
+        )
+    elif model_class == Rohan8Model:
+        return Rohan8Model(
+            top_k_base=kwargs.get("top_k_base", 10),
+            max_interactions=kwargs.get("max_interactions", 5),
+            n_estimators=kwargs.get("n_estimators", 60),
+            max_depth=kwargs.get("max_depth", 3),
+            learning_rate=kwargs.get("learning_rate", 0.08),
+            num_leaves=kwargs.get("num_leaves", 7),
+            min_child_samples=kwargs.get("min_child_samples", 5),
+            subsample=kwargs.get("subsample", 0.7),
+            colsample_bytree=kwargs.get("colsample_bytree", 0.7),
+            threshold_bias=kwargs.get("threshold_bias", 0),
+            random_state=seed,
+        )
     else:
         raise ValueError(f"Unknown model class: {model_class}")
 
@@ -183,7 +214,11 @@ def run_single_evaluation(
     importance = model.get_feature_importance()
     if importance is not None:
         result["feature_importance"] = importance
-    
+
+    # Capture per-round/epoch training history if the model provides it
+    if hasattr(model, "training_history_"):
+        result["training_history"] = model.training_history_
+
     return result
 
 
@@ -445,6 +480,72 @@ def print_model_report(results: Dict[str, Any]) -> None:
             print(f"  {i+1:2d}. Feature {idx:3d}: {importance['runtime'][idx]:.4f}")
 
 
+def plot_training_curves(results: Dict[str, Any], save_dir: Path) -> None:
+    """Plot train vs val loss curves from the first run that has training history."""
+    all_results = results.get("all_results", [])
+
+    # Collect all histories
+    histories = [r["training_history"] for r in all_results if "training_history" in r]
+    if not histories:
+        print("\nNo training history available for plotting (model may not support it).")
+        return
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model_name = results.get("model", "model")
+
+    # Use the first run's history for the main curve, overlay others faintly
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for ax, target, title in [
+        (axes[0], "threshold", "Threshold Model — L2 Loss per Boosting Round"),
+        (axes[1], "runtime", "Runtime Model — L2 Loss per Boosting Round"),
+    ]:
+        train_key = f"{target}_train_loss"
+        val_key = f"{target}_val_loss"
+
+        # Plot all runs faintly
+        for h in histories:
+            train_loss = h.get(train_key, [])
+            val_loss = h.get(val_key, [])
+            if train_loss and val_loss:
+                rounds = range(1, len(train_loss) + 1)
+                ax.plot(rounds, train_loss, color="tab:blue", alpha=0.08, linewidth=0.5)
+                ax.plot(rounds, val_loss, color="tab:orange", alpha=0.08, linewidth=0.5)
+
+        # Plot mean across runs
+        max_len = max(
+            (len(h.get(train_key, [])) for h in histories), default=0
+        )
+        if max_len > 0:
+            train_matrix = np.full((len(histories), max_len), np.nan)
+            val_matrix = np.full((len(histories), max_len), np.nan)
+            for i, h in enumerate(histories):
+                tl = h.get(train_key, [])
+                vl = h.get(val_key, [])
+                train_matrix[i, :len(tl)] = tl
+                val_matrix[i, :len(vl)] = vl
+
+            rounds = np.arange(1, max_len + 1)
+            mean_train = np.nanmean(train_matrix, axis=0)
+            mean_val = np.nanmean(val_matrix, axis=0)
+            ax.plot(rounds, mean_train, color="tab:blue", linewidth=2, label="Train (mean)")
+            ax.plot(rounds, mean_val, color="tab:orange", linewidth=2, label="Val (mean)")
+
+        ax.set_xlabel("Boosting Round")
+        ax.set_ylabel("L2 Loss (MSE)")
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f"{model_name} — Training Curves ({len(histories)} runs)", fontsize=13)
+    plt.tight_layout()
+
+    save_path = save_dir / f"{model_name.lower()}_training_curves.png"
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\nTraining curves saved to: {save_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate models with multiple random initializations and optional k-fold CV"
@@ -566,7 +667,11 @@ def main():
         )
     
     print_model_report(results)
-    
+
+    # Plot training curves if available
+    vis_dir = project_root / "visualizations"
+    plot_training_curves(results, vis_dir)
+
     print("\n" + "="*60)
     print("EVALUATION COMPLETE")
     print("="*60)
