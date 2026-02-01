@@ -17,13 +17,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOLD_LADDER
-from models.base import BaseModel
-from models.mlp import MLPModel, MLPContinuousModel
-from models.xgboost_model import XGBoostModel
-from models.catboost_model import CatBoostModel
-from models.lightgbm_model import LightGBMModel
-from scoring import compute_challenge_score
+from src.data_loader import create_data_loaders, create_kfold_data_loaders, THRESHOLD_LADDER
+from src.models.base import BaseModel
+from src.models.mlp import MLPModel, MLPContinuousModel
+from src.models.xgboost_model import XGBoostModel
+from src.models.catboost_model import CatBoostModel
+from src.models.lightgbm_model import LightGBMModel
+from src.models.pytorch_cascading_model import PyTorchCascadingModel
+from src.scoring import compute_challenge_score
 
 
 AVAILABLE_MODELS = {
@@ -32,6 +33,7 @@ AVAILABLE_MODELS = {
     "xgboost": XGBoostModel,
     "catboost": CatBoostModel,
     "lightgbm": LightGBMModel,
+    "pytorch_cascading": PyTorchCascadingModel,
 }
 
 
@@ -150,14 +152,9 @@ def create_model(
             temperature=kwargs.get("temperature", 10.0),
         )
     elif model_class == XGBoostModel:
-        return XGBoostModel(
-            max_depth=kwargs.get("max_depth", 6),
-            learning_rate=kwargs.get("learning_rate", 0.1),
-            n_estimators=kwargs.get("n_estimators", 100),
-            subsample=kwargs.get("subsample", 0.8),
-            colsample_bytree=kwargs.get("colsample_bytree", 0.8),
-            random_state=seed,
-        )
+        # Filter out unsupported arguments for XGBoostModel
+        supported_kwargs = {k: v for k, v in kwargs.items() if k in ['alpha', 'random_state']}
+        return XGBoostModel(**supported_kwargs)
     elif model_class == CatBoostModel:
         return CatBoostModel(
             depth=kwargs.get("depth", 6),
@@ -177,6 +174,14 @@ def create_model(
             colsample_bytree=kwargs.get("colsample_bytree", 0.8),
             random_state=seed,
             verbose=-1,
+        )
+    elif model_class == PyTorchCascadingModel:
+        return PyTorchCascadingModel(
+            hidden_dim=kwargs.get("hidden_dim", 64),
+            learning_rate=kwargs.get("learning_rate", 0.001),
+            epochs=kwargs.get("epochs", 50),
+            batch_size=kwargs.get("batch_size", 128),
+            device=kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu")
         )
     else:
         raise ValueError(f"Unknown model class: {model_class}")
@@ -459,6 +464,7 @@ def print_model_report(results: Dict[str, Any]) -> None:
         ("Challenge Threshold Score", "threshold_score"),
         ("Challenge Runtime Score", "runtime_score"),
         ("Challenge Combined Score", "combined_score"),
+        ("Val Threshold Absolute Error", "threshold_absolute_error"),
     ]
     
     for display_name, key in metric_display:

@@ -764,7 +764,7 @@ def load_hackathon_data(data_path: Path) -> Tuple[List[CircuitInfo], List[Result
     return circuits, results
 
 
-def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.99) -> Optional[int]:
+def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.75) -> Optional[int]:
     """Find the minimum threshold that meets the target fidelity."""
     for entry in sorted(sweep, key=lambda x: x.threshold):
         fid = entry.sdk_get_fidelity
