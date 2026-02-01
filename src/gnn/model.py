@@ -274,9 +274,16 @@ class QuantumCircuitGNN(nn.Module):
             self.threshold_head = OrdinalRegressionHead(hidden_dim, num_threshold_classes)
         else:
             self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
-        
+
+        # Runtime head now takes threshold as input
+        # Threshold embedding: encode threshold class as a feature
+        self.threshold_embed = nn.Sequential(
+            nn.Embedding(num_threshold_classes, hidden_dim // 4),
+            nn.Linear(hidden_dim // 4, hidden_dim // 4),
+        )
+
         self.runtime_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(hidden_dim + hidden_dim // 4, hidden_dim // 2),
             nn.ReLU(),
             nn.Linear(hidden_dim // 2, 1),
         )
@@ -289,10 +296,11 @@ class QuantumCircuitGNN(nn.Module):
         edge_gate_type: torch.Tensor,
         batch: torch.Tensor,
         global_features: torch.Tensor,
+        threshold_class: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass.
-        
+
         Args:
             x: Node features [total_nodes, node_feat_dim]
             edge_index: Edge connectivity [2, total_edges]
@@ -300,36 +308,47 @@ class QuantumCircuitGNN(nn.Module):
             edge_gate_type: Gate type indices [total_edges]
             batch: Batch assignment for each node [total_nodes]
             global_features: Global/circuit-level features [batch_size, global_feat_dim]
-        
+            threshold_class: Threshold class for runtime prediction [batch_size]
+                           If None, uses predicted threshold (for Task 1 only mode)
+
         Returns:
             threshold_logits: [batch_size, num_threshold_classes] or [batch_size, num_classes-1] for ordinal
             runtime_pred: [batch_size]
         """
         # Initial node embedding
         h = self.node_embed(x)
-        
+
         # Message passing with dropout
         for mp_layer in self.mp_layers:
             h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
             h = h + self.mp_dropout(h_new)  # residual connection with dropout
-        
+
         # Graph-level pooling (multiple aggregations for richer representation)
         h_mean = global_mean_pool(h, batch)
         h_max = global_max_pool(h, batch)
         h_sum = global_add_pool(h, batch)
         h_graph = torch.cat([h_mean, h_max, h_sum], dim=-1)
-        
+
         # Process global features
         g = self.global_proj(global_features)
-        
+
         # Combine graph and global representations
         combined = torch.cat([h_graph, g], dim=-1)
         combined = self.combined_mlp(combined)
-        
-        # Task predictions
+
+        # Task 1: Threshold prediction
         threshold_logits = self.threshold_head(combined)
-        runtime_pred = self.runtime_head(combined).squeeze(-1)
-        
+
+        # Task 2: Runtime prediction conditioned on threshold
+        if threshold_class is None:
+            # Use predicted threshold (for backwards compatibility during training)
+            threshold_class = self.predict_threshold_class(threshold_logits)
+
+        # Embed threshold and concatenate with combined representation
+        threshold_emb = self.threshold_embed(threshold_class)
+        runtime_input = torch.cat([combined, threshold_emb], dim=-1)
+        runtime_pred = self.runtime_head(runtime_input).squeeze(-1)
+
         return threshold_logits, runtime_pred
     
     def predict_threshold_class(self, threshold_logits: torch.Tensor) -> torch.Tensor:
@@ -418,9 +437,15 @@ class QuantumCircuitGNNWithAttention(nn.Module):
             self.threshold_head = OrdinalRegressionHead(hidden_dim, num_threshold_classes)
         else:
             self.threshold_head = nn.Linear(hidden_dim, num_threshold_classes)
-        
+
+        # Runtime head now takes threshold as input
+        self.threshold_embed = nn.Sequential(
+            nn.Embedding(num_threshold_classes, hidden_dim // 4),
+            nn.Linear(hidden_dim // 4, hidden_dim // 4),
+        )
+
         self.runtime_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(hidden_dim + hidden_dim // 4, hidden_dim // 2),
             nn.ReLU(),
             nn.Linear(hidden_dim // 2, 1),
         )
@@ -433,40 +458,51 @@ class QuantumCircuitGNNWithAttention(nn.Module):
         edge_gate_type: torch.Tensor,
         batch: torch.Tensor,
         global_features: torch.Tensor,
+        threshold_class: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         h = self.node_embed(x)
-        
+
         for mp_layer in self.mp_layers:
             h_new = mp_layer(h, edge_index, edge_attr, edge_gate_type)
             h = h + self.mp_dropout(h_new)
-        
+
         attn_scores = self.pool_attention(h)
-        
+
         batch_size = global_features.shape[0]
         num_heads = attn_scores.shape[1]
-        
+
         attn_weights = torch.zeros_like(attn_scores)
         for i in range(batch_size):
             mask = batch == i
             attn_weights[mask] = F.softmax(attn_scores[mask], dim=0)
-        
+
         h_pooled_list = []
         for head in range(num_heads):
             weights = attn_weights[:, head:head+1]
             h_weighted = h * weights
             h_pooled = global_add_pool(h_weighted, batch)
             h_pooled_list.append(h_pooled)
-        
+
         h_graph = torch.cat(h_pooled_list, dim=-1)
-        
+
         g = self.global_proj(global_features)
-        
+
         combined = torch.cat([h_graph, g], dim=-1)
         combined = self.combined_mlp(combined)
-        
+
+        # Task 1: Threshold prediction
         threshold_logits = self.threshold_head(combined)
-        runtime_pred = self.runtime_head(combined).squeeze(-1)
-        
+
+        # Task 2: Runtime prediction conditioned on threshold
+        if threshold_class is None:
+            # Use predicted threshold
+            threshold_class = self.predict_threshold_class(threshold_logits)
+
+        # Embed threshold and concatenate with combined representation
+        threshold_emb = self.threshold_embed(threshold_class)
+        runtime_input = torch.cat([combined, threshold_emb], dim=-1)
+        runtime_pred = self.runtime_head(runtime_input).squeeze(-1)
+
         return threshold_logits, runtime_pred
     
     def predict_threshold_class(self, threshold_logits: torch.Tensor) -> torch.Tensor:

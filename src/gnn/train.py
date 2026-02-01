@@ -98,6 +98,7 @@ class GNNTrainer:
                 edge_gate_type=batch.edge_gate_type,
                 batch=batch.batch,
                 global_features=batch.global_features,
+                threshold_class=batch.threshold_class,  # Ground truth threshold for Task 2 training
             )
             
             thresh_loss = self.threshold_criterion(
@@ -144,6 +145,7 @@ class GNNTrainer:
                 edge_gate_type=batch.edge_gate_type,
                 batch=batch.batch,
                 global_features=batch.global_features,
+                threshold_class=batch.threshold_class,  # Ground truth threshold for Task 2 training
             )
             
             # Use model's prediction method to handle ordinal vs standard
@@ -165,13 +167,13 @@ class GNNTrainer:
     def predict(self, loader: PyGDataLoader) -> Tuple[np.ndarray, np.ndarray]:
         """Get predictions for computing challenge scores."""
         self.model.eval()
-        
+
         all_thresh_values = []
         all_runtime_values = []
-        
+
         for batch in loader:
             batch = batch.to(self.device)
-            
+
             threshold_logits, runtime_pred = self.model(
                 x=batch.x,
                 edge_index=batch.edge_index,
@@ -179,17 +181,91 @@ class GNNTrainer:
                 edge_gate_type=batch.edge_gate_type,
                 batch=batch.batch,
                 global_features=batch.global_features,
+                threshold_class=batch.threshold_class,  # Ground truth threshold for Task 2 training
             )
-            
+
             # Use model's prediction method to handle ordinal vs standard
             thresh_classes = self.model.predict_threshold_class(threshold_logits).cpu().numpy()
             thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
             runtime_values = np.expm1(runtime_pred.cpu().numpy())
-            
+
             all_thresh_values.extend(thresh_values)
             all_runtime_values.extend(runtime_values)
-        
+
         return np.array(all_thresh_values), np.array(all_runtime_values)
+
+    @torch.no_grad()
+    def predict_task1(self, loader: PyGDataLoader) -> np.ndarray:
+        """
+        Task 1: Predict optimal threshold for target fidelity 0.75.
+
+        Returns:
+            Predicted threshold values
+        """
+        self.model.eval()
+        all_thresh_values = []
+
+        for batch in loader:
+            batch = batch.to(self.device)
+
+            # Task 1: Predict threshold only
+            # We can pass None for threshold_class since we're only interested in threshold prediction
+            threshold_logits, _ = self.model(
+                x=batch.x,
+                edge_index=batch.edge_index,
+                edge_attr=batch.edge_attr,
+                edge_gate_type=batch.edge_gate_type,
+                batch=batch.batch,
+                global_features=batch.global_features,
+                threshold_class=None,  # Will use predicted threshold internally
+            )
+
+            thresh_classes = self.model.predict_threshold_class(threshold_logits).cpu().numpy()
+            thresh_values = [THRESHOLD_LADDER[c] for c in thresh_classes]
+            all_thresh_values.extend(thresh_values)
+
+        return np.array(all_thresh_values)
+
+    @torch.no_grad()
+    def predict_task2(self, loader: PyGDataLoader, threshold_classes: torch.Tensor) -> np.ndarray:
+        """
+        Task 2: Predict runtime given specific thresholds.
+
+        Args:
+            loader: Data loader with circuit graphs
+            threshold_classes: Threshold class indices [num_samples]
+                              (e.g., 0=1, 1=2, 2=4, ..., 8=256)
+
+        Returns:
+            Predicted runtime values in seconds
+        """
+        self.model.eval()
+        all_runtime_values = []
+
+        sample_idx = 0
+        for batch in loader:
+            batch = batch.to(self.device)
+            batch_size = batch.batch.max().item() + 1
+
+            # Get threshold classes for this batch
+            batch_threshold_classes = threshold_classes[sample_idx:sample_idx + batch_size].to(self.device)
+
+            # Task 2: Predict runtime given threshold
+            _, runtime_pred = self.model(
+                x=batch.x,
+                edge_index=batch.edge_index,
+                edge_attr=batch.edge_attr,
+                edge_gate_type=batch.edge_gate_type,
+                batch=batch.batch,
+                global_features=batch.global_features,
+                threshold_class=batch_threshold_classes,  # Use provided threshold
+            )
+
+            runtime_values = np.expm1(runtime_pred.cpu().numpy())
+            all_runtime_values.extend(runtime_values)
+            sample_idx += batch_size
+
+        return np.array(all_runtime_values)
     
     def fit(
         self,
