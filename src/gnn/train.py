@@ -37,7 +37,7 @@ from gnn.dataset import (
 )
 from gnn.graph_builder import NODE_FEAT_DIM, EDGE_FEAT_DIM
 from gnn.augmentation import get_train_augmentation, AugmentedDataset
-from scoring import compute_challenge_score
+from scoring import compute_challenge_score, compute_threshold_score, compute_runtime_score
 
 
 class GNNTrainer:
@@ -357,10 +357,21 @@ def run_single_evaluation(
     # Get predictions and ground truth for challenge scoring
     pred_thresh, pred_runtime = trainer.predict(val_loader)
     true_thresh, true_runtime = extract_labels(val_loader)
-    
+
+    # Compute separate task scores
+    threshold_scores = compute_threshold_score(pred_thresh, true_thresh)
+    runtime_scores = compute_runtime_score(pred_runtime, true_runtime)
+
+    # Also compute combined score for backwards compatibility
     challenge_scores = compute_challenge_score(
         pred_thresh, true_thresh, pred_runtime, true_runtime
     )
+
+    # Merge all scores
+    challenge_scores.update({
+        "task1_threshold_score": threshold_scores["threshold_score"],
+        "task2_runtime_score": runtime_scores["runtime_score"],
+    })
     
     return {
         "train_time": train_time,
@@ -392,6 +403,8 @@ def aggregate_metrics(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
         ("threshold_score", "challenge_scores"),
         ("runtime_score", "challenge_scores"),
         ("combined_score", "challenge_scores"),
+        ("task1_threshold_score", "challenge_scores"),
+        ("task2_runtime_score", "challenge_scores"),
     ]
     
     for key, parent in metric_keys:
@@ -459,9 +472,9 @@ def print_report(results: Dict[str, Any]) -> None:
         ("Val Threshold Accuracy", "threshold_accuracy"),
         ("Val Runtime MSE", "runtime_mse"),
         ("Val Runtime MAE", "runtime_mae"),
-        ("Challenge Threshold Score", "threshold_score"),
-        ("Challenge Runtime Score", "runtime_score"),
-        ("Challenge Combined Score", "combined_score"),
+        ("Task 1: Threshold Score", "task1_threshold_score"),
+        ("Task 2: Runtime Score", "task2_runtime_score"),
+        ("Combined Score (legacy)", "combined_score"),
     ]
     
     for display_name, key in metric_display:
@@ -473,9 +486,16 @@ def print_report(results: Dict[str, Any]) -> None:
             )
     
     print("\n" + "-" * 60)
+    print("FINAL SCORES (Target Fidelity = 0.75):")
+    if "task1_threshold_score" in metrics:
+        m = metrics["task1_threshold_score"]
+        print(f"  Task 1 (Threshold): {m['mean']:.4f} ± {m['std']:.4f}")
+    if "task2_runtime_score" in metrics:
+        m = metrics["task2_runtime_score"]
+        print(f"  Task 2 (Runtime):   {m['mean']:.4f} ± {m['std']:.4f}")
     if "combined_score" in metrics:
         m = metrics["combined_score"]
-        print(f"Final Score: {m['mean']:.4f} ± {m['std']:.4f}")
+        print(f"  Combined (legacy):  {m['mean']:.4f} ± {m['std']:.4f}")
     print("=" * 60)
 
 

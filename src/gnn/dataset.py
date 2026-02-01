@@ -93,8 +93,8 @@ def compute_min_threshold(sweep: List[ThresholdSweepEntry], target: float = 0.99
 
 
 def get_threshold_class(sweep: List[ThresholdSweepEntry]) -> int:
-    """Get threshold as class index."""
-    min_thresh = compute_min_threshold(sweep, target=0.99)
+    """Get threshold as class index for target fidelity 0.75."""
+    min_thresh = compute_min_threshold(sweep, target=0.75)
     if min_thresh is None:
         return len(THRESHOLD_LADDER) - 1
     try:
