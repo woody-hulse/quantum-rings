@@ -151,6 +151,7 @@ def create_model(
             l2_leaf_reg=kwargs.get("l2_leaf_reg", 3.0),
             random_state=seed,
             verbose=False,
+            n_features_to_select=kwargs.get("n_features_to_select", None),
         )
     elif model_class == LightGBMModel:
         return LightGBMModel(
@@ -730,6 +731,12 @@ def main():
         choices=["average", "weighted_average", "vote"],
         help="Ensemble strategy (default: average)",
     )
+    parser.add_argument(
+        "--n-features",
+        type=int,
+        default=None,
+        help="Number of features to select for GBDT models (None=use all features)",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).parent.parent
@@ -855,6 +862,7 @@ def main():
         "device": args.device,
         "epochs": args.epochs,
         "use_scoring_loss": args.scoring_loss,
+        "n_features_to_select": args.n_features,
     }
 
     if use_kfold:
