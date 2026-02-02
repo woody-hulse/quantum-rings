@@ -1,6 +1,8 @@
 # Circuit Fingerprint Challenge (iQuHACK 2026)
 
-Predict the simulation cost–accuracy tradeoffs of quantum circuits on an approximate quantum simulator, using Quantum Rings.
+**Spirit Sprinters:🥇1st Place iQuHACK 2026🥇**
+
+Goal: Predict the simulation cost–accuracy tradeoffs of quantum circuits on an approximate quantum simulator, using Quantum Rings.
 
 ## Why this challenge matters
 
@@ -19,114 +21,113 @@ This challenge sits at the intersection of **quantum computing and machine learn
 
 The outcome is quantitative, but the impact will be far more than a leaderboard score. Strong solutions may directly inform **real developer tooling** in an upcoming release, enabling faster iteration, smarter resource allocation, and more accessible quantum experimentation.
 
-## Challenge Summary
+## Problem Overview
 
-In this challenge, you will build models that analyze **OpenQASM 2.0 quantum circuits** and predict how they will perform under different **approximate simulation configurations**. Given a circuit and execution context (CPU/GPU, precision), your goal is to estimate:
+Predict the minimum MPS threshold and forward wall-clock runtime for quantum circuit simulations given QASM circuit definitions, processor type (CPU/GPU), and precision (single/double).
 
-- the **minimum approximation threshold** required to meet a target fidelity, and  
-- the **expected wall-clock runtime** for a fixed-shot forward simulation at that threshold.
+---
 
-Rather than running the simulator directly, you will infer performance from **circuit structure and prior empirical data**, using techniques from machine learning combined with well designed heuristics and feature engineering based on the input files.
+## Features Extracted
 
-Your predictions are evaluated against hidden holdout circuits using an accuracy-based scoring function, rewarding both **correct threshold selection** and **runtime estimation**. This mirrors a real-world developer workflow: choosing simulation settings that balance fidelity and compute time/cost before ever pressing “run.”
+### Tabular Features (for CatBoost)
 
-## Prizes & recognition
+**Structural features** extracted from QASM files:
+- Gate counts: 1-qubit gates (H, X, Y, Z, S, T, RX, RY, RZ, etc.), 2-qubit gates (CX, CZ, SWAP), 3-qubit gates (CCX)
+- Qubit interaction graph statistics: max/avg degree, degree entropy, connected components, clustering coefficient
 
-In addition to bragging rights and leaderboard placement, winning teams will receive:
+**Entanglement complexity features**:
+- Graph bandwidth (MPS simulation complexity proxy)
+- Treewidth estimation via min-degree heuristic
+- Cut crossing metrics (middle-cut crossings, max-cut crossings)
+- Entanglement structure: nearest-neighbor ratio, long-range ratio, span Gini coefficient
 
-- **$200 per person in free quantum compute credits** on **Open Quantum** (Maximum of $1,000 for the winning team)
-- **Featured blog post** highlighting the winning team and their approach, with winners mentioned by name
-- **LinkedIn post from Quantum Rings**, including photos of the winners, and a shout out by name
-- **Guaranteed interview** for **Quantum Rings Quantum Internships (Summer 2026)**
+**Temporal features**:
+- Early/late long-range gate ratios
+- Light cone spread rate and coverage depth
+- Entanglement velocity (cumulative span growth)
 
-Exceptional submissions may also receive honorable mentions, even if they do not place first overall.
+**Pattern features**:
+- Gate sequence n-grams (H-CX patterns, CX-RZ-CX variational signatures)
+- Circuit regularity and repetition scores
+- Qubit activity entropy and variance
 
-## How the challenge works
+### Graph Features (for Transformer)
 
-This is an **offline prediction challenge**.
+**Node features** (per qubit, 22 dimensions):
+- Log-transformed 1-qubit gate counts by type
+- 2-qubit gate involvement count
+- Normalized position in qubit register
+- Temporal: first/last 2Q gate position, activity window, unique neighbors, average interaction span
 
-While you are free to experiment in any way you like, you are not required to run a quantum simulator during the hackathon. Instead, you will:
+**Edge features** (per gate, 4 dimensions):
+- Normalized temporal position in circuit
+- Gate parameter value
+- Qubit distance (normalized)
+- Cumulative 2Q gate count at edge position
 
-1. Study labeled performance data from a public set of quantum circuits
-2. Extract features from circuit structure and metadata
-3. Train a model or design heuristics to predict simulator behavior
-4. Generate predictions for a set of hidden holdout circuits
+**Global features**:
+- Circuit metadata: qubit count, gate counts, gate density
+- Execution context: backend (CPU/GPU), precision (single/double)
+- Threshold value (for duration model)
+- Circuit family one-hot encoding (20 families)
 
-Following team presentations, the hold out circuits will be provided, and the teams will run their code against the hidden circuits to produce predictions, which will then be evaluated against a private known truth file.
+---
 
-## Repository layout
+## Modeling Strategy
 
-The repository is organized to support the above workflow:
+### Threshold Prediction: CatBoost Classifier
 
-- `circuits/*.qasm` — curated **OpenQASM 2.0** circuits
-- `data/hackathon_public.json` — **labeled** public dataset for training/validation
-- `data/holdout_public.json` — holdout **task list** (IDs + CPU/GPU + precision). **Holdout QASM is not included.**
-- `scripts/validate_holdout_submission.py` — checks that your predictions file is valid
-- `scripts/score_holdout_submission.py` — scoring script (**requires a private truth file; organizers only**)
+- **Task**: 9-class classification (thresholds: 1, 2, 4, 8, 16, 32, 64, 128, 256)
+- **Model**: CatBoost with class-weighted training to handle imbalanced threshold distribution
+- **Decision rule**: Expected score maximization over predicted class probabilities using the asymmetric challenge scoring matrix (underprediction = 0, overprediction = 2^(-steps))
+- **Conservative bias**: Optional bias toward higher thresholds to minimize costly underpredictions
 
-## One goal, one leaderboard
+### Duration Prediction: Graph Transformer
 
-There is **one winner** based on a **single combined score**.
+- **Task**: Regression on log₂(wall time)
+- **Architecture**: Edge-aware multi-head attention with gate-type embeddings
+  - Attention bias derived from gate types and edge features
+  - Random-walk positional encoding for graph structure
+  - 4 transformer layers, 4 attention heads, 64 hidden dimensions
+- **Pooling**: Concatenation of mean, max, and sum graph-level representations
+- **Output**: Combined graph embedding + global features → MLP → runtime prediction
 
-You will make predictions for **every task** in `data/holdout_public.json`.
-Each task is one:
+**Why Graph Transformer for duration?** Quantum simulation runtime scales with entanglement structure. Self-attention naturally captures how entanglement propagates through circuits, with gate-specific attention biases learning which interactions dominate complexity.
 
-> task_id × (CPU/GPU) × (single/double precision)
+---
 
-(The circuit for each task is hidden; only organizers have the holdout QASM.)
+## Validation Approach
 
-For every task `id`, your submission must include **both**:
+- **Data split**: Train/validation split on hackathon public dataset
+- **Primary metric**: Challenge scoring function
+  - Threshold score: 0 if underpredicted, else 2^(−steps over)
+  - Runtime score: min(r, 1/r) where r = predicted/actual time
+  - Combined: threshold_score × runtime_score per task
+- **Secondary metrics**: Accuracy, MAE, underprediction rate for threshold; RMSE, MAPE for duration
+- **Cross-validation**: Stratified by circuit family and threshold class for robust hyperparameter tuning
 
-1) **`predicted_threshold_min`**  
-   Your predicted *minimum* threshold (from the tested ladder) that will meet the fidelity target on the mirror benchmark.
+---
 
-2) **`predicted_forward_wall_s`**  
-   Your predicted wall‑clock time (seconds) for the **10,000‑shot forward run** at that threshold.
+## Known Limitations
 
-The winner is the team with the **highest overall score**, computed by comparing your predictions to a private truth file (accuracy-based scoring). The score rewards:
-- predicting the **minimum threshold rung** that meets mirror fidelity ≥ 0.99, and
-- predicting the **10,000-shot forward runtime** at that rung.
+1. **Threshold class imbalance**: Lower thresholds (1, 2) are rare in training data, leading to potential underprediction on simple circuits
 
-See **`docs/SUBMISSION.md`** for the canonical format.
+2. **Circuit family generalization**: Performance may degrade on holdout circuits from unseen algorithm families not represented in training
 
-## Quick start
+3. **Graph size scaling**: Transformer attention scales O(n²) with qubit count; very large circuits may require batch size adjustments
 
-### 1) Explore the labeled dataset
+4. **Runtime variance**: Wall-clock time predictions inherit variance from hardware/system load during data collection; model captures expected runtime rather than exact timing
 
-Start with:
+5. **Feature coverage**: Some advanced circuit patterns (e.g., mid-circuit measurement, dynamic circuits) may not be fully captured by current feature engineering
 
-- `data/hackathon_public.json` (training data)
-- `docs/DATA.md` (schema + interpretation)
+---
 
-### 2) Train a model (or build a heuristic baseline)
+## Final Model Selection
 
-Feature ideas and modeling hints are in:
-
-- `docs/CHALLENGE.md`
-
-### 3) Predict the holdout tasks
-
-Write a `predict.py` script that reads a tasks JSON and a circuits directory and writes a predictions JSON.
-
-- Teams use the public training circuits for development.
-- Organizers provide the hidden holdout circuits directory at scoring time.
-
-See `docs/SUBMISSION.md` for the required interface and output format.
-
-### 4) Validate your file locally
-
-Use the validator to sanity-check your output format locally (optional debug artifact).
-
-From the repo root:
-
-```powershell
-python scripts/validate_holdout_submission.py `
-  --public data/holdout_public.json `
-  --submission .\my_predictions.json `
-  --write-normalized .\my_predictions.normalized.json
-```
-
-If validation succeeds, you may upload the normalized JSON as an optional debug artifact (not scored).
+| Task | Model | Key Hyperparameters |
+|------|-------|---------------------|
+| Threshold | CatBoost | depth=6, iterations=100, L2=3.0, class weights |
+| Duration | Graph Transformer | layers=4, heads=4, hidden=64, dropout=0.2 |
 
 ## Docs
 
@@ -138,18 +139,7 @@ Please find deeper documentation on the Challenge, the Data, the Submissions, an
 - `docs/CIRCUITS.md` — circuit library notes + provenance guidance
 - `docs/THIRD_PARTY.md` — third‑party attributions
 
-## Support During the Hackathon
-
-Rob Wamsley and Bob Wold will be available onsite as mentors during the daytime hacking sessions. During the nighttime hacking, Rob will be available via Discord until **10:00 PM**, then will return around **1:00 AM**.  
-
-They will also be participating through both the official **Quantum Rings iQuHack Discord** and the **permanent Quantum Rings Discord server** throughout the hackathon.
-
-For broader engagement with other Quantum Rings staff, or for a larger community of Quantum Rings users, during or as a follow-up after the hackathon, the Quantum Rings community will remain active.
-
-You can join here: [https://discord.gg/uAzeWRAh86](https://discord.gg/uAzeWRAh86)
-
 ## License
-
 This repository is MIT-licensed (see `LICENSE`).
 
-Submissions (your code + write‑up) are separate; see `docs/SUBMISSION.md` for suggested licensing language.
+Submission code and writeup are separate; see `docs/SUBMISSION.md` for suggested licensing language.
