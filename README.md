@@ -1,6 +1,4 @@
-# Circuit Fingerprint Challenge (iQuHACK 2026)
-
-**Spirit Sprinters:🥇1st Place iQuHACK 2026🥇**
+# 🥇1st Place iQuHACK 2026🥇 Circuit Fingerprint Challenge
 
 Goal: Predict the simulation cost–accuracy tradeoffs of quantum circuits on an approximate quantum simulator, using Quantum Rings.
 
