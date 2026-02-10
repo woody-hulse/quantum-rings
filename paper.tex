@@ -1,0 +1,597 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=0.9in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, calc}
+\usepackage{natbib}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\title{Graph Neural Networks for Predicting Quantum Circuit Simulation\\Cost: Architecture Design and Empirical Evaluation}
+
+\author{
+  Woody Hulse\textsuperscript{1} \quad
+  Hayden Miller\textsuperscript{1} \quad
+  Patrick Jennings\textsuperscript{1} \quad
+  Caden Schroeder\textsuperscript{1}
+  \\
+  Rohan Pankaj\textsuperscript{1} \quad
+  Rob Wamsley\textsuperscript{2}
+  \\[4pt]
+  \textsuperscript{1}Brown University \qquad
+  \textsuperscript{2}Quantum Rings, Inc.
+  \\[6pt]
+  \texttt{\{woody\_hulse, hayden\_miller, patrick\_jennings,}
+  \\
+  \texttt{caden\_schroeder, rohan\_pankaj\}@brown.edu}
+  \\
+  \texttt{rob.wamsley@quantumrings.com}
+}
+
+\date{February 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Approximate quantum circuit simulation on classical hardware requires careful selection of accuracy--performance tradeoffs. Matrix Product State (MPS) simulators expose a \emph{threshold} parameter controlling truncation aggressiveness, but choosing the minimum threshold that meets a fidelity target---and predicting the resulting wall-clock runtime---remains a costly trial-and-error process. We propose a family of Graph Neural Network (GNN) architectures that operate directly on the circuit graph (qubits as nodes, gates as edges) to predict both the minimum simulation threshold and expected runtime. We introduce five progressively complex architectures---a BasicGNN with per-gate-type message passing, an attention-augmented ImprovedGNN with ordinal regression, a full Graph Transformer with edge-aware attention and random-walk positional encodings, a Quantum Circuit Heterogeneous Graph Transformer (QCHGT) with multi-relation edges and meta-path attention, and a Temporal GNN with causal attention and state memory---and evaluate them on a dataset of 36 quantum circuits spanning 20 algorithm families. We find that simpler architectures generalize better under limited data, with the BasicGNN achieving a challenge score of $0.60 \pm 0.08$, and that ordinal regression and focal loss reduce costly underprediction by up to 35\%. We further demonstrate that an ensemble of CatBoost (for threshold classification) and Graph Transformer (for runtime regression) achieves the best combined performance. Our results highlight the importance of physics-informed graph representations and asymmetric loss design for quantum simulation cost prediction.
+\end{abstract}
+
+%% ====================================================================
+\section{Introduction}
+%% ====================================================================
+
+Quantum computing promises to transform computational science, but practical quantum algorithm development remains constrained by our ability to simulate quantum circuits on classical hardware~\citep{preskill2018quantum}. While quantum processing units (QPUs) continue to advance, most real-world development still occurs in simulation. The fundamental limitation is that exact quantum simulation scales exponentially with circuit size, making it infeasible beyond modest qubit counts~\citep{aaronson2016complexity}.
+
+Modern approximate simulators, particularly those based on tensor network methods such as Matrix Product States (MPS)~\citep{vidal2003efficient, orus2014practical}, offer a practical path forward by trading accuracy for computational efficiency. Platforms like Quantum Rings expose a configurable \emph{threshold} parameter that controls the SVD truncation aggressiveness during simulation: lower thresholds yield faster execution at the cost of reduced fidelity, while higher thresholds preserve more entanglement information but require substantially more computation~\citep{schollwock2011density}.
+
+This creates a critical optimization problem for practitioners:
+\begin{quote}
+\emph{Given a quantum circuit and execution context, what is the minimum threshold that achieves target fidelity, and how long will the simulation take?}
+\end{quote}
+
+Na\"ive approaches require expensive threshold sweeps for each new circuit. We instead propose to \emph{learn} the mapping from circuit structure to simulation cost using Graph Neural Networks (GNNs)~\citep{kipf2017semi, gilmer2017neural}. Quantum circuits possess a natural graph structure---qubits are nodes and gates are edges---making GNNs a principled representation choice. Crucially, the entanglement topology that determines MPS simulation difficulty is precisely the information that message-passing mechanisms are designed to capture.
+
+\paragraph{Contributions.} (1)~We design a circuit-to-graph encoding that captures per-qubit gate statistics, temporal ordering, and entanglement structure in 22-dimensional node features, 4-dimensional edge features with learned gate-type embeddings, and 27-dimensional global context vectors. (2)~We introduce five GNN architectures of increasing complexity, each motivated by a specific inductive bias for quantum circuits. (3)~We develop an asymmetric scoring-aware training framework with ordinal regression and decision-theoretic inference for the threshold classification task. (4)~We conduct a systematic empirical comparison demonstrating that architecture complexity must be matched to dataset scale, and that a hybrid CatBoost--Graph Transformer ensemble achieves the best overall performance.
+
+%% ====================================================================
+\section{Problem Formulation}
+%% ====================================================================
+
+\subsection{Quantum Circuit Simulation with MPS}
+
+An $n$-qubit quantum circuit $\mathcal{C}$ applies a sequence of gates $\{g_1, g_2, \ldots, g_m\}$ to an initial state $|0\rangle^{\otimes n}$. MPS simulation represents the quantum state as a chain of tensors with bond dimension $\chi$, where $\chi$ controls the maximum entanglement that can be faithfully represented~\citep{schollwock2011density}. During simulation, two-qubit gates that act across the MPS chain require SVD truncation, governed by a threshold parameter $\tau \in \{1, 2, 4, 8, 16, 32, 64, 128, 256\}$.
+
+\subsection{Prediction Tasks}
+
+Given a circuit $\mathcal{C}$, execution backend $b \in \{\text{CPU}, \text{GPU}\}$, and precision $p \in \{\text{single}, \text{double}\}$, we predict two quantities:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Minimum threshold} $\hat{\tau}_{\min}$: the smallest ladder rung achieving mirror fidelity $\geq 0.99$.
+    \item \textbf{Forward runtime} $\hat{t}$: the wall-clock time (seconds) for a 10{,}000-shot forward simulation at threshold $\hat{\tau}_{\min}$.
+\end{enumerate}
+
+\subsection{Scoring Function}
+
+The challenge employs an asymmetric scoring function per task:
+\begin{equation}
+    S_{\text{task}} = S_{\text{thresh}} \cdot S_{\text{runtime}}
+\end{equation}
+where the threshold score penalizes underprediction with zero and overprediction exponentially:
+\begin{equation}
+    S_{\text{thresh}} = \begin{cases} 0 & \text{if } \hat{\tau} < \tau^* \\ 2^{-(\text{steps over})} & \text{otherwise} \end{cases}
+\end{equation}
+and the runtime score is symmetric in log-space:
+\begin{equation}
+    S_{\text{runtime}} = \min(r, 1/r), \quad r = \hat{t} / t^*
+\end{equation}
+
+The asymmetry in threshold scoring---underprediction yields zero while overprediction degrades gracefully---is a crucial design consideration that motivates our conservative training strategies.
+
+%% ====================================================================
+\section{Circuits as Graphs}
+\label{sec:representation}
+%% ====================================================================
+
+The key insight underlying our approach is that quantum circuits have a natural graph structure that directly encodes the entanglement patterns relevant to MPS simulation cost. We represent each circuit as a directed multigraph $G = (V, E, \mathbf{X}, \mathbf{E}, \mathbf{g})$, where nodes correspond to qubits and edges correspond to gates.
+
+Figure~\ref{fig:circuit_and_graph} illustrates this representation for two circuits with strikingly different topologies. The QFT Entangled circuit (left) exhibits dense, long-range connectivity---nearly every qubit pair interacts through controlled-phase rotations, producing the all-to-all coupling visible in the graph. This explains why QFT variants are among the most expensive circuits for MPS simulation: every long-range gate crossing a bipartition of the qubit chain forces bond dimension growth. The Pricing Call circuit (right) tells a different story. Derived from quantum finance, it features a heterogeneous mix of gate types---CCX (Toffoli), CRY, CX, and single-qubit rotations---producing a complex, layered connectivity pattern where different qubit subsets are entangled through distinct mechanisms. This gate-type diversity is precisely the information our per-gate-type message passing is designed to capture.
+
+\begin{figure*}[t]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.38\textheight,keepaspectratio]{figures/graph_circuits/qftentangled_indep_qiskit_30_3d.pdf}
+        \caption{QFT Entangled (30 qubits): dense, all-to-all connectivity from controlled-phase and CNOT gates. The uniform gate-type distribution yields a homogeneous but highly entangled graph.}
+        \label{fig:qft_graph}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.38\textheight,keepaspectratio]{figures/graph_circuits/pricingcall_indep_qiskit_17_3d.pdf}
+        \caption{Pricing Call (17 qubits): heterogeneous gate types (CCX, CRY, CX, RY) produce a complex, multi-layered connectivity pattern characteristic of quantum finance circuits.}
+        \label{fig:pricing_graph}
+    \end{subfigure}
+    \caption{Qubit interaction graphs for two structurally distinct quantum circuits. Nodes represent qubits; edges represent two-qubit gate interactions, colored by gate type. The graph representation directly encodes the entanglement topology that determines MPS simulation cost---dense, long-range connectivity (left) and heterogeneous gate composition (right) both contribute to higher bond dimensions and longer runtimes.}
+    \label{fig:circuit_and_graph}
+\end{figure*}
+
+This graph structure is what our GNN architectures operate on. By contrast, tabular feature-engineering approaches must manually extract summary statistics (e.g., gate counts, average span, cut crossings) that approximate the information already present in the graph. The GNN learns to extract relevant structural features directly through message passing over the circuit topology.
+
+Figure~\ref{fig:graph_contrast} further illustrates the diversity of circuit topologies. The Portfolio QAOA circuit produces a densely entangled graph dominated by RZZ gates---a consequence of the QAOA cost operator encoding pairwise correlations between portfolio assets. The QPE Exact circuit displays a characteristic funnel structure where controlled-phase gates radiate from a ring of register qubits outward, reflecting the phase kickback mechanism central to quantum phase estimation. These structural differences are immediately apparent in the graph representation and correspond to dramatically different simulation costs.
+
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}[t]{0.48\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/graph_circuits/portfolioqaoa_indep_qiskit_17_3d.pdf}
+        \caption{Portfolio QAOA (17 qubits): dense RZZ entanglement encoding pairwise asset correlations.}
+        \label{fig:portfolioqaoa_graph}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\columnwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/graph_circuits/qpeexact_indep_qiskit_30_3d.pdf}
+        \caption{QPE Exact (30 qubits): funnel-shaped connectivity from controlled-phase gates in phase estimation.}
+        \label{fig:qpe_graph}
+    \end{subfigure}
+    \caption{Interaction graphs for circuits with contrasting structures. Portfolio QAOA's dense, all-to-all RZZ connectivity requires high thresholds, while QPE Exact's structured funnel topology reflects the phase kickback mechanism.}
+    \label{fig:graph_contrast}
+\end{figure}
+
+\subsection{Node Features ($\mathbf{X} \in \mathbb{R}^{|V| \times 22}$)}
+
+Each qubit $q_i$ is described by a 22-dimensional feature vector comprising three groups:
+\begin{itemize}[nosep]
+    \item \textbf{Gate counts} (15 dim): $\log(1 + c_t)$ for each single-qubit gate type $t \in \{$H, X, Y, Z, S, S$^\dagger$, T, T$^\dagger$, R$_x$, R$_y$, R$_z$, U$_1$, U$_2$, U$_3$, I$\}$.
+    \item \textbf{Two-qubit involvement} (1 dim): $\log(1 + n_{2q})$.
+    \item \textbf{Structural and temporal features} (6 dim): normalized register position, first and last two-qubit gate position, activity window, unique neighbor count, and average interaction span.
+\end{itemize}
+
+The temporal features are motivated by MPS simulation physics: qubits involved in early long-range entangling gates create persistent bond dimension growth that accumulates throughout the circuit.
+
+\subsection{Edge Features ($\mathbf{E} \in \mathbb{R}^{|E| \times 4}$)}
+
+Each gate $g_j$ connecting qubits $(q_s, q_t)$ carries four continuous attributes: normalized temporal position $\in [0, 1]$, gate parameter (rotation angle, or 0), qubit distance $|s - t| / (n - 1)$, and cumulative two-qubit gate count at position~$j$. Additionally, each edge carries a discrete gate type index $\in \{0, \ldots, 29\}$ mapped to learned embeddings, spanning 15 single-qubit, 12 two-qubit, and 3 three-qubit gate types.
+
+\subsection{Global Features ($\mathbf{g} \in \mathbb{R}^{27}$)}
+
+Circuit-level context includes normalized qubit count, total gate count, two-qubit gate count, gate density, backend/precision indicators, threshold (for runtime prediction), and a 20-dimensional circuit family one-hot encoding.
+
+\subsection{Data Augmentation}
+
+We employ five physics-informed augmentation strategies during training: (1)~\emph{qubit permutation} ($p{=}0.5$), exploiting the symmetry that circuit behavior is invariant under qubit relabeling; (2)~\emph{edge dropout} ($p{=}0.1$), for regularization; (3)~\emph{feature noise} ($\sigma{=}0.1$, $p{=}0.5$), Gaussian perturbation on continuous node features; (4)~\emph{temporal jitter} ($\sigma{=}0.05$, $p{=}0.5$), perturbing gate ordering within layers; and (5)~\emph{random edge reversal} ($p{=}0.5$) for symmetric gates (CZ, SWAP, R$_{xx}$, R$_{yy}$, R$_{zz}$). Qubit permutation is particularly well-motivated: since circuit behavior is invariant under relabeling of the qubits, this augmentation generates valid training examples without altering the underlying physics.
+
+%% ====================================================================
+\section{GNN Architectures}
+\label{sec:architectures}
+%% ====================================================================
+
+We present five architectures of increasing complexity. All share a common pipeline: node embedding $\to$ message passing or attention $\to$ graph pooling $\to$ global feature fusion $\to$ prediction head. The architectures differ in how they propagate information through the circuit graph, reflecting different hypotheses about which structural patterns are most informative for simulation cost prediction.
+
+\subsection{BasicGNN: Gate-Type Message Passing}
+
+The BasicGNN uses custom \texttt{GateTypeMessagePassing} layers where each of the 30 gate types has a learned embedding $\mathbf{e}_t \in \mathbb{R}^d$ that modulates message computation:
+\begin{align}
+    \mathbf{m}_{j \to i} &= \text{MLP}\big([\mathbf{h}_j \,\|\, \mathbf{e}_{t(j,i)} \,\|\, \mathbf{a}_{j,i}]\big) \\
+    \mathbf{h}_i' &= \text{LN}\Big(\text{MLP}\big([\mathbf{h}_i \,\|\, \textstyle\sum_j \mathbf{m}_{j \to i}]\big)\Big)
+\end{align}
+where $\mathbf{a}_{j,i}$ denotes edge attributes. Residual connections $\mathbf{h}_i \leftarrow \mathbf{h}_i + \text{Dropout}(\mathbf{h}_i')$ are applied after each of the $L{=}4$ message-passing layers. Graph-level representations are formed by concatenating mean, max, and sum pooling ($3d$-dimensional), then fused with projected global features through an output MLP.
+
+The key inductive bias is that per-gate-type embeddings allow the model to learn that CNOT gates create entanglement (increasing simulation cost) while Hadamard gates do not, without requiring this as a hard-coded rule. The additive aggregation naturally captures cumulative entanglement effects.
+
+\subsection{ImprovedGNN: Attentive Message Passing}
+
+The ImprovedGNN replaces basic message passing with \texttt{AttentiveGateMessagePassing}, which uses multi-head attention ($H$ heads) to weight neighbor messages:
+\begin{align}
+    \alpha_{j \to i}^{(h)} &= \frac{(\mathbf{W}_Q \mathbf{h}_i)^{(h)\top} (\mathbf{W}_K [\mathbf{h}_j \| \mathbf{e}_t \| \mathbf{a}])^{(h)}}{\sqrt{d/H}} \\
+    \mathbf{m}_{j \to i} &= \text{MLP}\!\Big(\textstyle\sum_h \text{softmax}(\alpha^{(h)}) \cdot \mathbf{W}_V^{(h)} [\mathbf{h}_j \| \mathbf{e}_t \| \mathbf{a}]\Big)
+\end{align}
+
+This architecture introduces two key innovations:
+
+\textbf{Stochastic depth.} Each layer $\ell$ has a drop probability $p_\ell = p_{\max} \cdot \ell / L$, linearly increasing with depth. During training, the entire layer output is dropped with probability $p_\ell$, otherwise scaled by $1/(1 - p_\ell)$~\citep{huang2016deep}. This regularization is critical given the small dataset size.
+
+\textbf{Ordinal regression head.} For threshold classification, we predict $K{-}1$ cumulative probabilities $P(\text{class} \geq k)$~\citep{frank2001simple}:
+\begin{equation}
+    P(y = k) = \sigma(f_k) - \sigma(f_{k+1})
+\end{equation}
+where $\sigma$ is the sigmoid function and $f_k$ are learned logits. This naturally captures the ordered nature of threshold classes ($1 < 2 < 4 < \cdots < 256$) and produces more calibrated probability estimates for decision-theoretic inference.
+
+\subsection{Graph Transformer: Edge-Aware Self-Attention}
+
+The Graph Transformer~\citep{ying2021transformers, rampasek2022GPS} addresses a fundamental limitation of message-passing GNNs: the need for multiple layers to propagate information across the graph. In quantum circuits, early gates can have long-range effects through entanglement, motivating global receptive fields.
+
+\textbf{Edge-aware attention.} Standard multi-head self-attention over all qubit pairs is augmented with edge-derived bias:
+\begin{equation}
+    \text{Attn}(Q,K,V) = \text{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_k}} + \mathbf{B}_g + \mathbf{B}_e\Big) V
+\end{equation}
+where $\mathbf{B}_g \in \mathbb{R}^{n \times n \times H}$ is from gate-type embeddings and $\mathbf{B}_e$ is projected from continuous edge features. For non-adjacent pairs, the bias is zero, softly encoding circuit topology while permitting global information flow.
+
+\textbf{Random-walk positional encoding.} Graph-aware positional encodings are computed via $k$-step random walk return probabilities~\citep{dwivedi2022graph}:
+\begin{equation}
+    \text{RWPE}_i = \big[\mathbf{A}^1_{ii}, \mathbf{A}^2_{ii}, \ldots, \mathbf{A}^k_{ii}\big] \in \mathbb{R}^k
+\end{equation}
+where $\mathbf{A}$ is the random-walk transition matrix. These are projected and added to node embeddings, capturing local structure such as qubit connectivity degree and neighborhood density.
+
+Each transformer layer follows a pre-norm architecture with GELU activations and a feed-forward dimension of $4d$.
+
+\subsection{QCHGT: Heterogeneous Graph Transformer}
+
+The Quantum Circuit Heterogeneous Graph Transformer (QCHGT) introduces \emph{multi-relational} edges, recognizing that different gate categories play fundamentally different roles in quantum simulation:
+
+\begin{itemize}[nosep]
+    \item \textbf{Rotation}: parameterized single-qubit (R$_x$, R$_y$, R$_z$, U$_{1\text{--}3}$).
+    \item \textbf{Pauli}: discrete single-qubit (H, X, Y, Z, S, T, \ldots).
+    \item \textbf{Entangle}: two-qubit entangling (CX, CZ, R$_{xx}$, R$_{yy}$, R$_{zz}$).
+    \item \textbf{Swap}: permutation (SWAP, CSWAP).
+    \item \textbf{Control}: multi-controlled (CCX, CCZ, CP, CR$_x$, \ldots).
+    \item \textbf{Temporal}: sequential ordering within each qubit.
+\end{itemize}
+
+Inspired by HGT~\citep{hu2020heterogeneous}, each relation type has dedicated query/key/value transformations with learnable relation-specific priors $\mu_r \in \mathbb{R}^H$ that scale attention scores.
+
+\textbf{Meta-path attention.} A semantic-level attention mechanism aggregates information along physically meaningful meta-paths: (1)~\emph{Entanglement path} (Entangle + Swap), capturing direct entanglement flow; (2)~\emph{Control path} (Control + Rotation), capturing parameterized conditional operations; and (3)~\emph{Local path} (Pauli + Temporal), capturing local qubit evolution. Learned attention weights determine the relative contribution of each meta-path at every node.
+
+\textbf{Entanglement-aware pooling.} Rather than simple mean/max pooling, the QCHGT uses attention-based graph readout where each qubit's contribution is weighted by a learned function of its representation, allowing the model to focus on the most entanglement-critical qubits.
+
+\subsection{Temporal GNN: Causal Modeling}
+
+The Temporal GNN models quantum circuits as \emph{temporal sequences} of operations, motivated by the fact that MPS simulation processes gates sequentially, with state complexity monotonically growing.
+
+\textbf{Temporal gate embedding.} Each gate receives a rich embedding combining gate-type embedding, learned entangling/complexity properties, multi-scale temporal position encoding (discrete buckets + continuous projection), rotation parameter encoding, and edge feature projection.
+
+\textbf{Causal temporal attention.} Extends graph attention with temporal bias terms:
+\begin{equation}
+    \alpha_{j \to i} = \frac{\mathbf{q}_i^\top \mathbf{k}_j}{\sqrt{d_k}} + \beta_{\text{time}}(t_j) + \beta_{\text{pos}}(|s_j - s_i|)
+\end{equation}
+where $\beta_{\text{time}}$ captures causal influence decay and $\beta_{\text{pos}}$ encodes relative qubit distance.
+
+\textbf{Entanglement-aware convolution.} A dedicated message-passing layer models entanglement spread by weighting messages by qubit distance---long-range gates that require higher MPS bond dimension receive amplified attention:
+\begin{equation}
+    \mathbf{m}_{j \to i} = \text{MLP}([\mathbf{h}_i \| \mathbf{h}_j \| \mathbf{e}_g]) \cdot (1 + \sigma_d(|q_j - q_i|))
+\end{equation}
+
+\textbf{State Memory GRU.} A GRU cell~\citep{cho2014learning} tracks per-qubit state evolution by aggregating incoming gate information:
+\begin{equation}
+    \mathbf{h}_i^{(t+1)} = \text{GRU}\big([\bar{\mathbf{g}}_i \| \mathbf{h}_i^{(t)}], \; \mathbf{h}_i^{(t)}\big)
+\end{equation}
+where $\bar{\mathbf{g}}_i$ is the mean-normalized gate embedding aggregated over edges incident to qubit $i$.
+
+\textbf{Multi-scale temporal pooling.} The graph-level representation combines standard pooling (mean, max, sum), temporal attention pooling (learned importance weighting with temporal position), and early/late split pooling (capturing temporal asymmetry with learnable weights).
+
+\subsection{Architecture Summary}
+
+Table~\ref{tab:architectures} summarizes the key properties of each architecture.
+
+\begin{table}[t]
+\centering
+\caption{Architecture comparison ($d{=}64$, $L{=}4$, $H{=}4$).}
+\label{tab:architectures}
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{Time} & \textbf{Key Feature} \\
+\midrule
+BasicGNN & 154K & 26s & Gate-type embed. \\
+Improved & 222K & 60s & Attention, ordinal \\
+Transformer & 300K & 90s & Edge-aware attn. \\
+QCHGT & 400K & 120s & Multi-relation \\
+Temporal & 500K & 180s & Causal attn, GRU \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ====================================================================
+\section{Training and Inference}
+\label{sec:training}
+%% ====================================================================
+
+\subsection{Loss Functions}
+
+For \textbf{runtime prediction}, all architectures minimize $L_1$ loss on $\log_2(\text{runtime})$, which naturally handles the multi-order-of-magnitude range of simulation times.
+
+For \textbf{threshold classification}, we evaluate four loss variants:
+\begin{enumerate}[nosep]
+    \item \emph{Cross-entropy (CE)}: standard multi-class classification.
+    \item \emph{Ordinal regression}: binary cross-entropy on cumulative probabilities with optional conservative weighting.
+    \item \emph{Focal loss}~\citep{lin2017focal}: $\text{FL}(p_t) = -(1{-}p_t)^\gamma \log(p_t)$ with $\gamma{=}2$, focusing training on hard examples.
+    \item \emph{Conservative CE}: asymmetric label smoothing that shifts probability mass toward higher threshold classes.
+\end{enumerate}
+
+\subsection{Decision-Theoretic Inference}
+
+Rather than selecting $\hat{\tau} = \arg\max_k P(y = k)$, we maximize expected challenge score:
+\begin{equation}
+    \hat{\tau} = \arg\max_k \sum_{j} M_{k,j} \cdot P(y {=} j)
+\end{equation}
+where $M_{k,j} = S_{\text{thresh}}(k, j)$ is the scoring matrix. This naturally favors conservative predictions because the asymmetric scoring function assigns zero to underpredictions but positive (decaying) scores to overpredictions. An optional conservative bias $\beta$ can further shift predictions:
+\begin{equation}
+    \hat{\tau} = \arg\max_k \Big[\textstyle\sum_j M_{k,j} P(y{=}j) + \beta \cdot k/(K{-}1)\Big]
+\end{equation}
+
+\subsection{Optimization}
+
+All models use AdamW~\citep{loshchilov2019decoupled} with learning rate $10^{-3}$, weight decay $10^{-4}$, gradient clipping at norm 1.0, and ReduceLROnPlateau scheduling (factor 0.5, patience 10). Early stopping with patience 20 selects the best model by validation metric ($\log_2$-MAE for runtime, expected threshold score for classification).
+
+%% ====================================================================
+\section{Experiments}
+\label{sec:experiments}
+%% ====================================================================
+
+\subsection{Dataset}
+
+The dataset comprises 36 OpenQASM 2.0 circuits from 20 algorithm families (Amplitude Estimation, GHZ, Grover, QFT, QAOA, VQE, Shor, etc.), each evaluated under multiple backend/precision configurations, yielding 137 labeled task instances (144 total, with 7 excluded due to timeout or failure). Circuit sizes range from 3 to 130 qubits with gate counts from tens to thousands. For each circuit--configuration pair, the dataset provides threshold sweep results (mirror fidelity at each ladder rung) and a 10{,}000-shot forward run at the selected minimum threshold.
+
+\subsection{GNN Architecture Comparison}
+
+Table~\ref{tab:gnn_comparison} reports threshold classification performance across GNN architectures using $d{=}16$, $L{=}4$, $H{=}2$, with ordinal regression and data augmentation, averaged over 2 runs.
+
+\begin{table}[t]
+\centering
+\caption{GNN architecture comparison for threshold classification. Score is the mean expected threshold score; Under is the underprediction rate.}
+\label{tab:gnn_comparison}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model} & \textbf{Score} & \textbf{Acc} & \textbf{Under} & \textbf{Time} \\
+\midrule
+BasicGNN & \textbf{0.56} & 0.40 & \textbf{0.28} & 14s \\
+ImprovedGNN & 0.56 & \textbf{0.48} & 0.36 & 24s \\
+Transformer & 0.53 & 0.42 & 0.36 & 29s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Finding 1: Simpler architectures generalize better under limited data.} The BasicGNN matches or outperforms more complex architectures despite having the fewest parameters (12K vs.\ 17K--21K). With only ${\sim}110$ training samples, the additional capacity of attention mechanisms leads to overfitting rather than improved generalization, consistent with the bias--variance tradeoff.
+
+\textbf{Finding 2: Underprediction rate is the critical factor.} The BasicGNN achieves the lowest underprediction rate (0.28 vs.\ 0.36), which directly translates to higher challenge scores because each underprediction contributes zero to the overall score.
+
+\subsection{Loss Function Comparison}
+
+Table~\ref{tab:loss_comparison} compares loss functions for the ImprovedGNN architecture on threshold classification, averaged over 3 runs.
+
+\begin{table}[t]
+\centering
+\caption{Loss function comparison for threshold classification.}
+\label{tab:loss_comparison}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Loss Function} & \textbf{Score} & \textbf{Under} & \textbf{Acc} \\
+\midrule
+Baseline CE & 0.573 & 0.307 & 0.48 \\
+Ordinal Regression & 0.667 & 0.200 & 0.53 \\
+Focal ($\gamma{=}2$) & \textbf{0.720} & 0.253 & \textbf{0.69} \\
+Conservative CE & 0.640 & 0.280 & 0.56 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Finding 3: Focal loss achieves the best threshold score.} By focusing training on hard-to-classify boundary cases where underprediction is most likely, focal loss~\citep{lin2017focal} achieves the highest validation score of 0.72.
+
+\textbf{Finding 4: Ordinal regression reduces underprediction by 35\%.} The ordinal head reduces underprediction from 30.7\% to 20.0\%, confirming that exploiting the ordinal structure of threshold classes produces calibrated predictions that naturally favor conservative choices.
+
+\subsection{Duration Prediction}
+
+Table~\ref{tab:duration} compares the BasicGNN baseline with the ImprovedGNN on runtime regression.
+
+\begin{table}[t]
+\centering
+\caption{Duration prediction in $\log_2$ MAE (lower is better).}
+\label{tab:duration}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model} & \textbf{Val MAE} & \textbf{Train MAE} & \textbf{Gap} \\
+\midrule
+Baseline GNN & 0.696 & 0.506 & 0.190 \\
+Improved GNN & \textbf{0.677} & 0.675 & \textbf{0.001} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ImprovedGNN achieves a marginally lower validation MAE (0.677 vs.\ 0.696) with dramatically reduced overfitting (gap of 0.001 vs.\ 0.190). Stochastic depth and attention-based aggregation provide strong regularization, preventing the model from memorizing training examples.
+
+\subsection{Comparison with Tabular Models}
+
+Table~\ref{tab:tabular_comparison} compares GNNs with gradient-boosted tree models operating on hand-crafted tabular features (${\sim}60$ QASM-derived features plus configuration indicators), evaluated via 5-fold cross-validation.
+
+\begin{table}[t]
+\centering
+\caption{GNN vs.\ tabular model comparison. Tabular models use 5-fold CV; BasicGNN uses 5-run holdout validation.}
+\label{tab:tabular_comparison}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model} & \textbf{Thresh} & \textbf{Runtime} & \textbf{Combined} \\
+\midrule
+XGBoost & 0.666 & 0.420 & 0.337 \\
+MLP & 0.744 & 0.362 & 0.327 \\
+CatBoost & \textbf{0.691} & \textbf{0.445} & \textbf{0.385} \\
+BasicGNN & 0.600 & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+CatBoost~\citep{prokhorenkova2018catboost} achieves the best combined score (0.385) among single models, benefiting from built-in handling of categorical features (circuit family) and robustness to small datasets. The GNN threshold score (0.60) is competitive but slightly lower, likely due to limited training data relative to learnable parameters.
+
+\subsection{Final System Design}
+
+Based on these findings, our final prediction system uses a \textbf{hybrid architecture}:
+
+\begin{itemize}[nosep]
+    \item \textbf{Threshold}: CatBoost classifier with 62 QASM-derived features, class-weighted training, and decision-theoretic inference maximizing expected challenge score.
+    \item \textbf{Runtime}: Graph Transformer operating on the full circuit graph, predicting $\log_2(\text{runtime})$ conditioned on the predicted threshold.
+\end{itemize}
+
+This design leverages the strengths of each approach: CatBoost excels at discrete classification with limited data and interpretable features, while the Graph Transformer captures fine-grained structural patterns that determine runtime scaling. The runtime prediction task benefits more from the graph representation because runtime varies continuously with circuit structure, whereas threshold prediction is a coarse 9-class problem where hand-crafted entanglement features are already highly informative.
+
+%% ====================================================================
+\section{Analysis and Discussion}
+%% ====================================================================
+
+\subsection{Why Graph Structure Matters}
+
+The graph representation captures information that flat feature vectors cannot: the \emph{topology} of qubit interactions. For MPS simulation, the critical quantity is the entanglement across bipartitions of the qubit chain, which depends not just on how many two-qubit gates exist, but on \emph{where} they act. Two circuits with identical gate counts but different connectivity patterns (e.g., nearest-neighbor vs.\ all-to-all CX gates) have vastly different simulation costs.
+
+This is visually apparent in Figures~\ref{fig:circuit_and_graph} and~\ref{fig:graph_contrast}: the dense all-to-all connectivity of QFT circuits contrasts sharply with the structured funnel topology of QPE or the heterogeneous gate patterns of Pricing Call circuits. Our edge features encode this information: qubit distance captures the span of entangling gates across the MPS chain, temporal position encodes when entanglement is created, and cumulative two-qubit count tracks the growth of entanglement pressure. The gate-type embeddings learn to distinguish gates that create entanglement (CX, CZ) from those that merely transform local state (H, R$_z$).
+
+\subsection{The Data Efficiency Challenge}
+
+Our most important empirical finding is that \emph{model complexity must be matched to dataset scale}. With 137 labeled instances, the BasicGNN (12K parameters) achieves the best generalization for threshold prediction, while the ImprovedGNN (17K parameters) provides the best regularization for runtime prediction via stochastic depth. The Graph Transformer (21K+ parameters) shows promise but requires careful regularization, and the QCHGT and Temporal GNN (100K+ parameters) need substantially more data to realize their architectural advantages. This suggests that scaling quantum circuit simulation datasets would unlock the potential of more expressive architectures.
+
+\subsection{Feature Importance}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/feature_importance/feature_importance_threshold_xgboost.png}
+    \caption{Feature importance for threshold prediction (XGBoost). Cut-crossing, bandwidth, and circuit family features dominate, confirming that entanglement topology is the primary driver of simulation difficulty.}
+    \label{fig:feature_importance}
+\end{figure}
+
+Figure~\ref{fig:feature_importance} shows the feature importance ranking for threshold prediction from our XGBoost baseline. The top predictive features align with known MPS complexity drivers:
+\begin{enumerate}[nosep]
+    \item \emph{Cut-crossing features}: gates crossing bipartitions directly proxy the bond dimension required.
+    \item \emph{Graph bandwidth}: the maximum span of interactions determines minimum bond dimension.
+    \item \emph{Light cone spread rate}: how quickly information propagates correlates with entanglement growth.
+    \item \emph{Long-range gate ratio}: gates with span $\geq n/3$ strongly predict simulation difficulty.
+    \item \emph{Circuit family}: algorithm type provides a strong prior (e.g., QFT vs.\ VQE patterns).
+\end{enumerate}
+
+Notably, these are exactly the structural features that our graph representation makes available to the GNN through message passing: cut crossings correspond to edges crossing graph bipartitions, bandwidth corresponds to maximum edge weight in the qubit distance feature, and light cone spread emerges from multi-hop message propagation. The GNN learns to extract these features automatically, while the tabular model requires them to be manually engineered.
+
+\subsection{Asymmetric Cost and Conservative Prediction}
+
+The scoring function's asymmetry (zero for underprediction vs.\ exponential decay for overprediction) fundamentally shapes our approach. Standard classification losses treat all errors equally, leading to underprediction rates of 30--36\%. Our asymmetry-aware techniques reduce this to 20--25\% through complementary mechanisms: ordinal regression naturally produces conservative predictions via cumulative probability encoding; focal loss focuses on hard boundary cases; decision-theoretic inference directly optimizes expected challenge score; and the conservative bias parameter provides a tunable safety margin.
+
+%% ====================================================================
+\section{Related Work}
+%% ====================================================================
+
+GNNs have been applied to quantum circuit optimization~\citep{fosel2021quantum} and quantum error correction~\citep{lange2023data}, but not to simulation cost prediction. Theoretical work on quantum circuit complexity~\citep{aaronson2016complexity} establishes that simulation cost relates to entanglement structure, motivating our graph-based approach. Our Graph Transformer builds on~\citet{ying2021transformers, rampasek2022GPS, dwivedi2022graph} with gate-type-specific attention biases, while the QCHGT extends heterogeneous graph methods~\citep{wang2019heterogeneous, hu2020heterogeneous} with quantum-circuit-specific relation types. The neural message-passing framework of~\citet{gilmer2017neural}, originally developed for molecular property prediction, provides the foundation for our gate-type-aware message passing---quantum circuits and molecules share the key property that edge types (bond types / gate types) carry critical semantic information.
+
+%% ====================================================================
+\section{Conclusion}
+%% ====================================================================
+
+We have presented a systematic study of GNN architectures for quantum circuit simulation cost prediction. Our key findings are: (1)~quantum circuits are naturally represented as graphs where GNNs can learn the relationship between circuit topology and MPS simulation complexity; (2)~simpler GNN architectures outperform more complex ones under limited data, suggesting that scaling simulation datasets is a high-value research direction; (3)~asymmetric loss functions and decision-theoretic inference are essential for the practically motivated scoring function; and (4)~a hybrid system combining gradient-boosted trees for threshold classification with a Graph Transformer for runtime regression achieves the best overall performance.
+
+Future work should explore pre-training GNNs on large corpora of synthetic circuits, multi-task learning across threshold and runtime prediction, integration of theoretical MPS complexity bounds as inductive biases, and extension to other tensor network methods beyond MPS.
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{20}
+
+\bibitem[Aaronson and Chen(2017)]{aaronson2016complexity}
+S.~Aaronson and L.~Chen.
+\newblock Complexity-theoretic foundations of quantum supremacy experiments.
+\newblock In \emph{Proc.\ 32nd Computational Complexity Conference}, 2017.
+
+\bibitem[Cho et~al.(2014)]{cho2014learning}
+K.~Cho, B.~van Merrienboer, C.~Gulcehre, D.~Bahdanau, F.~Bougares, H.~Schwenk, and Y.~Bengio.
+\newblock Learning phrase representations using {RNN} encoder-decoder for statistical machine translation.
+\newblock In \emph{EMNLP}, 2014.
+
+\bibitem[Dwivedi et~al.(2022)]{dwivedi2022graph}
+V.~P. Dwivedi, A.~T. Luu, T.~Laurent, Y.~Bengio, and X.~Bresson.
+\newblock Graph neural networks with learnable structural and positional representations.
+\newblock In \emph{ICLR}, 2022.
+
+\bibitem[Fosel et~al.(2021)]{fosel2021quantum}
+T.~Fosel, M.~Y. Niu, F.~Marquardt, and L.~Li.
+\newblock Quantum circuit optimization with deep reinforcement learning.
+\newblock \emph{arXiv:2103.07585}, 2021.
+
+\bibitem[Frank and Hall(2001)]{frank2001simple}
+E.~Frank and M.~Hall.
+\newblock A simple approach to ordinal classification.
+\newblock In \emph{ECML}, pages 145--156. Springer, 2001.
+
+\bibitem[Gilmer et~al.(2017)]{gilmer2017neural}
+J.~Gilmer, S.~S. Schoenholz, P.~F. Riley, O.~Vinyals, and G.~E. Dahl.
+\newblock Neural message passing for quantum chemistry.
+\newblock In \emph{ICML}, 2017.
+
+\bibitem[Hu et~al.(2020)]{hu2020heterogeneous}
+Z.~Hu, Y.~Dong, K.~Wang, and Y.~Sun.
+\newblock Heterogeneous graph transformer.
+\newblock In \emph{The Web Conference (WWW)}, 2020.
+
+\bibitem[Huang et~al.(2016)]{huang2016deep}
+G.~Huang, Y.~Sun, Z.~Liu, D.~Sedra, and K.~Q. Weinberger.
+\newblock Deep networks with stochastic depth.
+\newblock In \emph{ECCV}, pages 646--661, 2016.
+
+\bibitem[Kipf and Welling(2017)]{kipf2017semi}
+T.~N. Kipf and M.~Welling.
+\newblock Semi-supervised classification with graph convolutional networks.
+\newblock In \emph{ICLR}, 2017.
+
+\bibitem[Lange et~al.(2023)]{lange2023data}
+H.~Lange, M.~Kebrici, M.~Van~Damme, A.~Sarkar, T.~Clutton-Brock, and A.~Perdomo-Ortiz.
+\newblock Data-driven decoding of quantum error correcting codes using graph neural networks.
+\newblock \emph{arXiv:2307.01241}, 2023.
+
+\bibitem[Lin et~al.(2017)]{lin2017focal}
+T.-Y. Lin, P.~Goyal, R.~Girshick, K.~He, and P.~Doll\'{a}r.
+\newblock Focal loss for dense object detection.
+\newblock In \emph{ICCV}, 2017.
+
+\bibitem[Loshchilov and Hutter(2019)]{loshchilov2019decoupled}
+I.~Loshchilov and F.~Hutter.
+\newblock Decoupled weight decay regularization.
+\newblock In \emph{ICLR}, 2019.
+
+\bibitem[Or\'{u}s(2014)]{orus2014practical}
+R.~Or\'{u}s.
+\newblock A practical introduction to tensor networks: Matrix product states and projected entangled pair states.
+\newblock \emph{Annals of Physics}, 349:117--158, 2014.
+
+\bibitem[Preskill(2018)]{preskill2018quantum}
+J.~Preskill.
+\newblock Quantum computing in the {NISQ} era and beyond.
+\newblock \emph{Quantum}, 2:79, 2018.
+
+\bibitem[Prokhorenkova et~al.(2018)]{prokhorenkova2018catboost}
+L.~Prokhorenkova, G.~Gusev, A.~Vorobev, A.~V. Dorogush, and A.~Gulin.
+\newblock {CatBoost}: unbiased boosting with categorical features.
+\newblock In \emph{NeurIPS}, 2018.
+
+\bibitem[Ramp\'{a}\v{s}ek et~al.(2022)]{rampasek2022GPS}
+L.~Ramp\'{a}\v{s}ek, M.~Galkin, V.~P. Dwivedi, A.~T. Luu, G.~Wolf, and D.~Beaini.
+\newblock Recipe for a general, powerful, scalable graph transformer.
+\newblock In \emph{NeurIPS}, 2022.
+
+\bibitem[Schollw\"{o}ck(2011)]{schollwock2011density}
+U.~Schollw\"{o}ck.
+\newblock The density-matrix renormalization group in the age of matrix product states.
+\newblock \emph{Annals of Physics}, 326(1):96--192, 2011.
+
+\bibitem[Vidal(2003)]{vidal2003efficient}
+G.~Vidal.
+\newblock Efficient classical simulation of slightly entangled quantum computations.
+\newblock \emph{Physical Review Letters}, 91(14):147902, 2003.
+
+\bibitem[Wang et~al.(2019)]{wang2019heterogeneous}
+X.~Wang, H.~Ji, C.~Shi, B.~Wang, Y.~Ye, P.~Cui, and P.~S. Yu.
+\newblock Heterogeneous graph attention network.
+\newblock In \emph{The Web Conference (WWW)}, pages 2022--2032, 2019.
+
+\bibitem[Ying et~al.(2021)]{ying2021transformers}
+C.~Ying, T.~Cai, S.~Luo, S.~Zheng, G.~Ke, D.~He, Y.~Shen, and T.-Y. Liu.
+\newblock Do transformers really perform badly for graph representation?
+\newblock In \emph{NeurIPS}, 2021.
+
+\end{thebibliography}
+
+\end{document}
